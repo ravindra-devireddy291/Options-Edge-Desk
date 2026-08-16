@@ -1,0 +1,16 @@
+[Unit]
+Description=Options Edge Desk (Dhan FastAPI :8080)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Options-Edge-Desk
+EnvironmentFile=/root/Options-Edge-Desk/.env
+Environment=PYTHONPATH=/root/Options-Edge-Desk
+ExecStart=/root/Options-Edge-Lab/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
