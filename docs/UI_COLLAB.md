@@ -18,7 +18,7 @@ This file is the **as-built** desk the UI must wire to. Same 19 trader routes in
 | Origin | Local desk `http://127.0.0.1:8080`. Hosted desk `https://…` (Cloudflare). No `:8080` from Vercel. |
 | Envelope | `{ ok, server_time, data }` on `/api/v1/desk/*`. `ok: true` = desk answered, **not** “order filled”. |
 | Mutations | HTTP 200 + `data.accepted` + `data.code`. Map `accepted: false` to a result card, not a network crash. |
-| WS | Optional. BFF only: `ws://` or `wss://{host}/ws/desk?api_key=`. Does not replace REST place/cancel. |
+| WS | Optional. BFF only: `ws://` or `wss://{host}/ws/desk?api_key=`. Prefer `GET /snapshot` + WS deltas; does not replace REST place/cancel. |
 
 Do **not** set `NEXT_PUBLIC_DESK_API_KEY`, `NEXT_PUBLIC_API_BASE_URL`, or `NEXT_PUBLIC_DESK_USE_MOCK`.
 
@@ -32,6 +32,7 @@ JSON paths are relative to `{DESK_API_URL}/api/v1/desk` except `/healthz` and `/
 |---|--------|------|--------|------|
 | 0 | GET | `/healthz` | Connectivity | none |
 | 1 | GET | `/status` | Home | key |
+| 1b | GET | `/snapshot` | Boot + reconcile | key |
 | 2 | POST | `/runner/start` | Start confirm | key |
 | 3 | POST | `/runner/stop` | Stop confirm | key |
 | 4 | GET | `/positions` | Home + Book | key |

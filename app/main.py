@@ -24,6 +24,7 @@ from app.runners.state import RUNNER, _now
 from app.schemas.envelope import err, ok
 from app.session import market_session, session_day
 from app import triggers as trigger_store
+from app.ws_hub import CHANNELS, HUB
 
 
 def _mock_on() -> bool:
@@ -102,6 +103,7 @@ async def lifespan(_app: FastAPI):
     get_settings()
     RUNNER.load()
     MOCK.bind_loop(asyncio.get_running_loop())
+    HUB.bind_loop(asyncio.get_running_loop())
     token_task = asyncio.create_task(_token_keeper())
     mock_task = asyncio.create_task(_mock_keeper())
     auto_task = asyncio.create_task(_broker_auto_keeper())
@@ -208,6 +210,7 @@ def health_tick_payload() -> Dict[str, Any]:
     )}
     trig = _active_trigger()
     data["trigger"] = trig
+    data["seq"] = RUNNER.seq
     return data
 
 
@@ -348,12 +351,80 @@ def health_full_payload() -> Dict[str, Any]:
 
 # ---------- routes ----------
 
+def _positions_payload() -> Dict[str, Any]:
+    if _mock_on() and not _today_paper_archive():
+        return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
+    try:
+        return dhan.positions_grid()
+    except Exception as exc:  # noqa: BLE001
+        from app import paper_archive
+
+        arch = paper_archive.load()
+        saved = (arch or {}).get("positions")
+        if isinstance(saved, dict):
+            return {**saved, "from_archive": True, "detail": str(exc)[:240]}
+        if _mock_on():
+            return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
+        return {"rows": [], "row_count": 0, "snapshot_at": _now(), "detail": str(exc)}
+
+
+def _orders_payload() -> Dict[str, Any]:
+    if _mock_on() and not _today_paper_archive():
+        return MOCK.exclusive_sync(MOCK.ledger.open_orders)
+    try:
+        return dhan.open_orders_response()
+    except Exception as exc:  # noqa: BLE001
+        from app import paper_archive
+
+        arch = paper_archive.load()
+        saved = (arch or {}).get("orders_open")
+        if isinstance(saved, dict):
+            return {**saved, "from_archive": True, "detail": str(exc)[:240]}
+        if _mock_on():
+            return MOCK.exclusive_sync(MOCK.ledger.open_orders)
+        return {"orders": [], "count": 0, "snapshot_at": _now(), "detail": str(exc)}
+
+
+def desk_snapshot_payload() -> Dict[str, Any]:
+    """Composite boot/reconcile — nests existing list shapes (UI §1b)."""
+    if _mock_on() and not _today_paper_archive():
+        status = MOCK.exclusive_sync(desk_status_payload)
+        positions = MOCK.exclusive_sync(MOCK.ledger.positions_grid)
+        orders = MOCK.exclusive_sync(MOCK.ledger.open_orders)
+        trades = MOCK.exclusive_sync(MOCK.ledger.trades_today)
+        signals = MOCK.exclusive_sync(MOCK.ledger.signals_today)
+        triggers = MOCK.exclusive_sync(_active_trigger)
+    else:
+        status = MOCK.exclusive_sync(desk_status_payload) if _mock_on() else desk_status_payload()
+        positions = _positions_payload()
+        orders = _orders_payload()
+        trades = _trades_payload()
+        signals = _signals_payload()
+        triggers = MOCK.exclusive_sync(_active_trigger) if _mock_on() else _active_trigger()
+    return {
+        "snapshot_at": _now(),
+        "seq": RUNNER.seq,
+        "status": status,
+        "positions": positions,
+        "orders": orders,
+        "trades": trades,
+        "signals": signals,
+        "triggers": triggers,
+    }
+
+
 @app.get("/api/v1/desk/status")
 def desk_status(_: None = Depends(require_api_key)):
     """MVP home snapshot. UI must use this instead of /health/full."""
     if _mock_on():
         return ok(MOCK.exclusive_sync(desk_status_payload))
     return ok(desk_status_payload())
+
+
+@app.get("/api/v1/desk/snapshot")
+def desk_snapshot(_: None = Depends(require_api_key)):
+    """One-shot status + books for boot / reconcile (UI DESK_SNAPSHOT_WS)."""
+    return ok(desk_snapshot_payload())
 
 
 @app.get("/api/v1/desk/research/stable")
@@ -564,38 +635,12 @@ def _signals_payload(day: Optional[str] = None) -> Dict[str, Any]:
 
 @app.get("/api/v1/desk/positions")
 def positions(_: None = Depends(require_api_key)):
-    if _mock_on() and not _today_paper_archive():
-        return ok(MOCK.exclusive_sync(MOCK.ledger.positions_grid))
-    try:
-        return ok(dhan.positions_grid())
-    except Exception as exc:  # noqa: BLE001
-        from app import paper_archive
-
-        arch = paper_archive.load()
-        saved = (arch or {}).get("positions")
-        if isinstance(saved, dict):
-            return ok({**saved, "from_archive": True, "detail": str(exc)[:240]})
-        if _mock_on():
-            return ok(MOCK.exclusive_sync(MOCK.ledger.positions_grid))
-        return ok({"rows": [], "row_count": 0, "snapshot_at": _now(), "detail": str(exc)})
+    return ok(_positions_payload())
 
 
 @app.get("/api/v1/desk/orders/open")
 def orders_open(_: None = Depends(require_api_key)):
-    if _mock_on() and not _today_paper_archive():
-        return ok(MOCK.exclusive_sync(MOCK.ledger.open_orders))
-    try:
-        return ok(dhan.open_orders_response())
-    except Exception as exc:  # noqa: BLE001
-        from app import paper_archive
-
-        arch = paper_archive.load()
-        saved = (arch or {}).get("orders_open")
-        if isinstance(saved, dict):
-            return ok({**saved, "from_archive": True, "detail": str(exc)[:240]})
-        if _mock_on():
-            return ok(MOCK.exclusive_sync(MOCK.ledger.open_orders))
-        return ok({"orders": [], "count": 0, "snapshot_at": _now(), "detail": str(exc)})
+    return ok(_orders_payload())
 
 
 @app.get("/api/v1/desk/trades/today")
@@ -1115,11 +1160,13 @@ async def ws_desk(websocket: WebSocket):
     if not await require_ws_api_key(websocket):
         return
     await websocket.accept()
+    HUB.register(websocket)
     await websocket.send_json(
         {
             "type": "connected",
             "server_time": _now(),
-            "channels": ["health.tick", "signal.trigger", "signal.clear"],
+            "channels": list(CHANNELS),
+            "seq": RUNNER.seq,
         }
     )
     last_tid: Optional[str] = None
@@ -1135,16 +1182,27 @@ async def ws_desk(websocket: WebSocket):
                     "type": "health.tick",
                     "server_time": _now(),
                     "data": health,
+                    "seq": RUNNER.seq,
                 }
             )
             tid = (trig.get("trigger") or {}).get("trigger_id") if trig.get("active") else None
             if tid and tid != last_tid:
                 await websocket.send_json(
-                    {"type": "signal.trigger", "server_time": _now(), "data": trig["trigger"]}
+                    {
+                        "type": "signal.trigger",
+                        "server_time": _now(),
+                        "data": trig["trigger"],
+                        "seq": RUNNER.seq,
+                    }
                 )
             if last_tid and not tid:
                 await websocket.send_json(
-                    {"type": "signal.clear", "server_time": _now(), "data": {"trigger_id": last_tid}}
+                    {
+                        "type": "signal.clear",
+                        "server_time": _now(),
+                        "data": {"trigger_id": last_tid},
+                        "seq": RUNNER.seq,
+                    }
                 )
             last_tid = tid
             await asyncio.sleep(1.0 if _mock_on() else 5.0)
@@ -1155,6 +1213,8 @@ async def ws_desk(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+    finally:
+        HUB.unregister(websocket)
 
 
 @app.get("/healthz")

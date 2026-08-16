@@ -169,6 +169,7 @@ All trader screens use the **same routes**. Mode only changes **data source** an
 |---|--------|-------------|-----------|--------------|------------|------|
 | 0 | `GET /healthz` | Process up. Not PnL | same | same | same | same |
 | 1 | `GET /status` | Sim spots, mock books, `execution`, `replay`, `today_net` from ledger | same | Dhan spots + shadow PnL; `execution` | same | live Dhan + `execution` |
+| 1b | `GET /snapshot` | Composite status + books + `seq` | same | same | same | same |
 | 2 | `POST /runner/start` | Reset tape | Reset tape, auto fills | Arm Dhan + execution | Arm Dhan auto | Arm live + execution |
 | 3 | `POST /runner/stop` | Freeze ledger, clock pause | same | Disarm; positions remain at Dhan | same | same |
 | 4 | `GET /positions` | Mock rows; additive `tape_qty`/`overlay_qty` | same | Dhan non-zero rows | same | same |
@@ -185,7 +186,7 @@ All trader screens use the **same routes**. Mode only changes **data source** an
 | 16 | `GET /gates` | Simplified mock sleeves | same | Lab `check_gate` | same | same |
 | 17 | `GET /triggers/active` | Approval buy at `entry_at` | `fill_notice` after fills | Approval from PENDING | `fill_notice` after Dhan fill | same as paper |
 | 18 | `POST /triggers/ack` | Hides that `trigger_id` | same | same | same | same |
-| 19 | `WS /ws/desk` | `health.tick` + `signal.trigger` (approval or fill_notice) | same | same | same | same |
+| 19 | `WS /ws/desk` | `health.tick` + trigger + `position.*` / `order.*` / `trade.append` on mutations | same | same | same | same |
 
 Lab research is **mode-independent**. Mock tape is always `most_stable`, not the Lab chip.
 
@@ -199,8 +200,10 @@ There is **no** dedicated tick WebSocket for option LTP and **no** delta/diff en
 
 | Channel | Payload | Cadence |
 |---------|---------|---------|
-| `GET /status` | spots, `%`, `today_net`, `unrealized_pnl`, `realized_pnl_today`, `open_positions`, books, session | 5–15 s |
-| `WS health.tick` | **Subset:** process, trading, mode, token, kill, halt, broker, session, two spots, `today_net`, `open_positions`, mock `execution`/`replay` | ~5 s |
+| `GET /snapshot` | Full status + positions + orders + trades + signals + triggers + `seq` | Boot / soft reconcile |
+| `GET /status` | spots, `%`, `today_net`, `unrealized_pnl`, `realized_pnl_today`, `open_positions`, books, session | Probe / partial clients |
+| `WS health.tick` | **Subset:** process, trading, mode, token, kill, halt, broker, session, two spots, `today_net`, `open_positions`, mock `execution`/`replay`, `seq` | ~1 s mock / ~5 s paper |
+| `WS position.*` / `order.*` / `trade.append` | Mutation deltas (REST row shapes) | On place/fill/cancel |
 | `GET /quotes/spot` | Optional extra spots | As needed |
 
 `health.tick` is **not** full `/status` (no `books[]`, no full PnL split besides `today_net`). After a fill, poll `/status` + `/positions` (or rely on next health.tick `today_net` / `open_positions`).
@@ -295,7 +298,7 @@ Client: mark **Need** / **Defer** / **OK as-built**. Desk will only implement **
 3. Poll `/triggers/active` (or WS) for **one** interrupt.
 4. If `placeable === true` (and `role !== fill_notice`) → approval → ticket → `POST /orders/paper`.
 5. If `role === fill_notice` **or** `placeable === false` with a fill note → toast only → `POST /triggers/ack`.
-6. Book/Day: `/positions`, `/orders/open`, `/trades/today`, `/signals/today` on focus and after place/ack/sync.
+6. Book/Day: prefer `/snapshot` on boot/reconcile; WS deltas patch lists; legacy `/positions`, `/orders/open`, `/trades/today`, `/signals/today` remain for probes.
 7. Ticket chain: `/contracts` then `/quotes/option` 1 s. Gates: `/gates`. Null LTP is valid.
 8. Never auto-call `/orders/paper` from the UI because a trigger appeared in **auto** (that would double-fill mock tape).
 

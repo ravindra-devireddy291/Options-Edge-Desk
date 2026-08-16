@@ -88,6 +88,7 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 |---|--------|------|--------|------|
 | 0 | `GET` | `/healthz` | Connectivity | none |
 | 1 | `GET` | `/api/v1/desk/status` | Home | key |
+| 1b | `GET` | `/api/v1/desk/snapshot` | Boot + reconcile (composite) | key |
 | 2 | `POST` | `/api/v1/desk/runner/start` | Home confirm | key |
 | 3 | `POST` | `/api/v1/desk/runner/stop` | Home confirm | key |
 | 4 | `GET` | `/api/v1/desk/positions` | Home + Book | key |
@@ -111,12 +112,12 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 
 | Resource | Interval |
 |----------|----------|
-| `GET /status` | 5–15 s signed in; **~1 s** while `mode=mock` and `replay.playing` |
+| `GET /snapshot` (preferred) or `GET /status` | Boot once; reconcile **15–20 s** with WS up, **~3 s** if WS down while armed |
 | `GET /quotes/option` | 1 s while ticket open |
-| `GET /triggers/active` | 2–5 s if WS is down |
-| Book / Day | On tab focus + after place/cancel/sync |
+| Book / Day lists | Included in `/snapshot` — do not fan-out from the browser |
 | Lab | On tab focus |
 
+See [`DESK_SNAPSHOT_WS.md`](./DESK_SNAPSHOT_WS.md) for the snapshot + delta model.  
 WebSocket does **not** replace REST for place/cancel.
 
 ---
@@ -232,7 +233,32 @@ Home snapshot. Poll this.
 
 Mock `GET /status`: `token_ok` is `true` (no Dhan). `market_session` follows **sim clock**. Quotes/PnL are synthetic. Same field names as paper/live.
 
+Home status object. Prefer **`GET /snapshot`** for boot/reconcile; keep `/status` for probes and partial clients.
+
 **Banner priority (UI):** kill/halt > broker down > market closed.
+
+---
+
+## 1b. `GET /api/v1/desk/snapshot`
+
+Composite boot / reconcile. One envelope; nests existing list shapes.
+
+```json
+{
+  "snapshot_at": "2026-08-16T19:40:00Z",
+  "seq": 1842,
+  "status": { },
+  "positions": { "rows": [] },
+  "orders": { "orders": [] },
+  "trades": { "trades": [] },
+  "signals": { "signals": [] },
+  "triggers": { "active": false, "trigger": null }
+}
+```
+
+`status` matches §1. List envelopes match §positions / §orders / §trades / §signals / §triggers.  
+`seq` is a monotonic desk counter (also on `health.tick` / book WS events).  
+Full event catalog: [`DESK_SNAPSHOT_WS.md`](./DESK_SNAPSHOT_WS.md).
 
 ---
 
@@ -933,18 +959,26 @@ Chip toggle: `NIFTY` vs `BANKNIFTY`.
 
 ## 19. `WS /ws/desk?api_key=`
 
-Optional. Health ticks only — connecting does **not** advance trading cycles or place orders.
+Optional. Connecting does **not** advance trading cycles or place orders.
 
 ```json
-{ "type": "connected", "server_time": "…", "channels": ["health.tick", "signal.trigger", "signal.clear"] }
+{ "type": "connected", "server_time": "…", "channels": ["health.tick", "signal.trigger", "signal.clear", "account.patch", "mark.batch", "position.upsert", "position.remove", "order.upsert", "order.remove", "trade.append"] }
 { "type": "health.tick", "server_time": "…", "data": { } }
+{ "type": "account.patch", "server_time": "…", "data": { } }
+{ "type": "mark.batch", "server_time": "…", "data": { "nifty_spot": 0, "marks": [] } }
+{ "type": "position.upsert", "server_time": "…", "data": { } }
+{ "type": "position.remove", "server_time": "…", "data": { "key": "…" } }
+{ "type": "order.upsert", "server_time": "…", "data": { } }
+{ "type": "order.remove", "server_time": "…", "data": { "order_id": "…" } }
+{ "type": "trade.append", "server_time": "…", "data": { } }
 { "type": "signal.trigger", "server_time": "…", "data": { } }
 { "type": "signal.clear", "server_time": "…", "data": { "trigger_id": "…" } }
 ```
 
-`health.tick.data` is a subset of `GET /status` plus `trigger` (same object as `GET /triggers/active`).  
-`signal.trigger.data` matches `GET /triggers/active.trigger`.  
-Tick interval: **~1 s in mock**, ~5 s in paper/live.
+`health.tick.data` is a subset of `GET /status` plus `trigger` (same object as `GET /triggers/active`) and `seq`.  
+Delta payloads match the corresponding REST row shapes. Emitted on OMS/mock mutations (not every raw mark).  
+Tick / mark conflation: **~1 s in mock**, ~5 s paper idle; `mark.batch` / `account.patch` reserved for a later pass.  
+UI: apply deltas in memory; use `GET /snapshot` only for boot, reconnect, mutations, and a slow safety net.
 
 ---
 

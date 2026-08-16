@@ -51,6 +51,7 @@ class RunnerState:
     speed: float = 60.0
     paper_auto_schedule: bool = False
     paused_day: Optional[str] = None
+    seq: int = 0
     kill: KillSwitch = field(default_factory=KillSwitch)
     order_queue: List[Dict[str, Any]] = field(default_factory=list)
     audit: List[Dict[str, Any]] = field(default_factory=list)
@@ -58,6 +59,12 @@ class RunnerState:
 
     def trading_active(self) -> bool:
         return self.state.upper() == "RUNNING" and not self.kill.active and not self.stop_requested
+
+    def bump_seq(self) -> int:
+        """Monotonic desk sequence for snapshot / WS gap detection."""
+        with self._lock:
+            self.seq += 1
+            return self.seq
 
     def bump_cycle(self) -> None:
         with self._lock:

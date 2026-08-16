@@ -504,26 +504,42 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
             paper_archive.capture(reason="order_place")
         except Exception:
             pass
-        return finish(
-            {
-                "accepted": True,
-                "code": "OK",
-                "message": None,
-                "order": {
-                    "client_order_id": client_oid,
-                    "broker_order_id": str(broker_id) if broker_id else None,
-                    "side": side,
-                    "lots": lots_i,
-                    "lot_size": lot_size,
-                    "quantity": qty,
-                    "price": float(live_ltp),
-                    "status": "TRANSIT",
-                },
-                "contract": cui,
-                "gate": gate,
-                "quote": _quote_ui(quote),
-            }
-        )
+        placed = {
+            "accepted": True,
+            "code": "OK",
+            "message": None,
+            "order": {
+                "client_order_id": client_oid,
+                "broker_order_id": str(broker_id) if broker_id else None,
+                "order_id": str(broker_id) if broker_id else client_oid,
+                "side": side,
+                "lots": lots_i,
+                "lot_size": lot_size,
+                "quantity": qty,
+                "price": float(live_ltp),
+                "status": "TRANSIT",
+            },
+            "contract": cui,
+            "gate": gate,
+            "quote": _quote_ui(quote),
+        }
+        try:
+            from app.desk_events import emit_paper_place_result
+
+            pos_row = None
+            try:
+                grid = dhan.positions_grid()
+                sid = str(contract.security_id)
+                for row in list(grid.get("rows") or []):
+                    if str(row.get("security_id") or "") == sid:
+                        pos_row = row
+                        break
+            except Exception:
+                pos_row = None
+            emit_paper_place_result(placed, positions_row=pos_row)
+        except Exception:
+            pass
+        return finish(placed)
     except Exception as exc:  # noqa: BLE001
         code = classify_broker_error(exc)
         RUNNER.last_error = str(exc)[:240]
@@ -579,6 +595,12 @@ def cancel_paper(order_id: str, operator_id: str = "ui") -> Dict[str, Any]:
                 "code": "ALREADY_FILLED",
                 "message": "Order already filled. Check Active trades.",
             }
+        try:
+            from app.desk_events import emit_order_remove
+
+            emit_order_remove(oid)
+        except Exception:
+            pass
         return {**base, "accepted": True, "code": "OK", "message": None, "result": raw}
     except Exception as exc:  # noqa: BLE001
         code = classify_cancel_error(exc)

@@ -211,3 +211,16 @@ def tick() -> None:
         paper_archive.capture(reason="auto_eod")
     except Exception:
         pass
+    if n_ok:
+        try:
+            from app.desk_events import emit_position_remove, emit_position_upsert
+
+            grid = dhan.positions_grid()
+            for row in list(grid.get("rows") or []):
+                qty = int(row.get("qty") or row.get("quantity") or 0)
+                if qty != 0:
+                    emit_position_upsert(row)
+                else:
+                    emit_position_remove(row)
+        except Exception:
+            pass

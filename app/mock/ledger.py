@@ -228,6 +228,17 @@ class MockLedger:
             existing["broker_entry"] = pos["average_price"]
             existing["tape_qty"] = pos["tape_qty"]
             existing["overlay_qty"] = pos["overlay_qty"]
+        order_row = self.orders[-1] if self.orders else None
+        trade_row = next(
+            (t for t in self.trades if t.get("trade_id") == pos["trade_id"] and t.get("exit_reason") == "open"),
+            None,
+        )
+        try:
+            from app.desk_events import emit_mock_buy
+
+            emit_mock_buy(dict(pos), dict(order_row) if order_row else None, dict(trade_row) if trade_row else None)
+        except Exception:
+            pass
         return {
             "client_order_id": oid,
             "broker_order_id": broker_oid,
@@ -309,7 +320,9 @@ class MockLedger:
             }
         )
         open_row = next((t for t in self.trades if t.get("trade_id") == pos.get("trade_id") and t.get("exit_reason") == "open"), None)
-        if pos["qty"] <= 0:
+        pos_snap = dict(pos)
+        fully_closed = int(pos["qty"]) <= 0
+        if fully_closed:
             if open_row:
                 open_row["exit_price"] = price
                 open_row["exit_reason"] = reason
@@ -355,6 +368,22 @@ class MockLedger:
                     "origin": close_source,
                 }
             )
+        order_row = self.orders[-1] if self.orders else None
+        trade_out = dict(open_row) if fully_closed and open_row else (dict(self.trades[-1]) if self.trades and not fully_closed else None)
+        try:
+            from app.desk_events import emit_mock_sell, position_key
+
+            if fully_closed:
+                emit_mock_sell(
+                    None,
+                    dict(order_row) if order_row else None,
+                    trade_out,
+                    removed_key=position_key(pos_snap),
+                )
+            else:
+                emit_mock_sell(dict(pos), dict(order_row) if order_row else None, trade_out)
+        except Exception:
+            pass
         return {
             "client_order_id": oid,
             "broker_order_id": broker_oid,
@@ -405,6 +434,12 @@ class MockLedger:
                     return {"accepted": False, "code": "ORDER_NOT_FOUND", "order_id": order_id, "message": "Order not found. Nothing was cancelled."}
                 o["status"] = "CANCELLED"
                 o["cancellable"] = False
+                try:
+                    from app.desk_events import emit_order_remove
+
+                    emit_order_remove(str(o.get("order_id") or order_id))
+                except Exception:
+                    pass
                 return {"accepted": True, "code": "OK", "order_id": order_id, "message": None, "result": {"order_id": order_id}}
         return {"accepted": False, "code": "ORDER_NOT_FOUND", "order_id": order_id, "message": "Order not found. Nothing was cancelled."}
 
