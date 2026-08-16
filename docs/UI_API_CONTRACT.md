@@ -708,6 +708,8 @@ Refreshes positions, open orders, cash, rebuilds shadow state.
 
 IST calendar day. Includes open rounds (`exit_reason: "open"`).
 
+Optional `?day=YYYY-MM-DD` (same path; default is today). If lab journals are empty, the desk returns the VPS snapshot `data/paper/{day}.json`. Mock without `day` still returns the sim blotter.
+
 **`data`:**
 
 ```json

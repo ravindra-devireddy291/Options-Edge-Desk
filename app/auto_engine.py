@@ -205,3 +205,9 @@ def tick() -> None:
             n_ok += 1
             _notice_from_place(sig, result)
     RUNNER.audit_event("auto.eod", day=day, flattened=n_ok)
+    try:
+        from app import paper_archive
+
+        paper_archive.capture(reason="auto_eod")
+    except Exception:
+        pass

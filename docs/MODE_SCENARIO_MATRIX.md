@@ -175,8 +175,8 @@ All trader screens use the **same routes**. Mode only changes **data source** an
 | 5 | `GET /orders/open` | Working mock only (fills are already `TRADED` → usually empty) | same | Dhan working | same | same |
 | 6 | `POST /orders/paper` | User overlay + manual tape fill | Overlay only (tape already filled) | User strategy + overlay | Overlay (desk placed strategy) | same as paper |
 | 7 | `POST /orders/cancel` | `ALREADY_FILLED` if mock fill | same | Dhan cancel | same | same |
-| 8 | `GET /trades/today` | Mock blotter | same | Shadow journals | same | same |
-| 9 | `GET /signals/today` | Tape rows PENDING/EXECUTED/SKIPPED | EXECUTED/auto on fill | Today’s journals | same | same |
+| 8 | `GET /trades/today` | Mock blotter | same | Shadow journals, else `data/paper/{day}.json` | same | same |
+| 9 | `GET /signals/today` | Tape rows PENDING/EXECUTED/SKIPPED | EXECUTED/auto on fill | Today’s journals, else paper archive | same | same |
 | 10 | `POST /sync` | Snapshot sim; no Dhan | same | Dhan + shadow rebuild | same | same |
 | 11–12 | `GET /research/stable*` | Lab packs (does **not** pick mock tape) | same | same | same | same |
 | 13 | `GET /contracts` | Tape strikes / dummy expiry | same | Dhan master | same | same |

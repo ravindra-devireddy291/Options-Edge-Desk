@@ -37,6 +37,7 @@ FILES = [
     "app/auto_engine.py",
     "app/desk_log.py",
     "app/schedule.py",
+    "app/paper_archive.py",
     "app/mock/__init__.py",
     "app/mock/clock.py",
     "app/mock/tape_index.py",
@@ -84,7 +85,13 @@ def main() -> int:
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(HOST, username=USER, password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
     run(c, "findmnt /mnt/sys || (mkdir -p /mnt/sys && mount /dev/vdb1 /mnt/sys)")
-    run(c, f"mkdir -p {CHROOT}{REMOTE}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,docs,deploy,data/audit,scripts}}")
+    run(c, f"mkdir -p {CHROOT}{REMOTE}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,docs,deploy,data/audit,data/paper,scripts}}")
+    run(
+        c,
+        f"mkdir -p {CHROOT}/root/Options-Nifty-Edge-Lab/reports/shadow "
+        f"{CHROOT}/root/Options-Edge-Lab/reports/shadow",
+        check=False,
+    )
 
     sftp = c.open_sftp()
     for rel in FILES:

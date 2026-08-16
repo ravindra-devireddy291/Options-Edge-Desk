@@ -83,6 +83,19 @@ async def _paper_session_keeper() -> None:
         await asyncio.sleep(5.0)
 
 
+async def _paper_archive_keeper() -> None:
+    """Overwrite IST-day snapshot while paper/live is armed so VPS disk stays current."""
+    from app import paper_archive
+
+    while True:
+        try:
+            if (RUNNER.mode or "").lower() in ("paper", "live"):
+                await asyncio.to_thread(paper_archive.capture, reason="keeper")
+        except Exception:
+            pass
+        await asyncio.sleep(30.0)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     dhan.load_dotenv()
@@ -93,12 +106,13 @@ async def lifespan(_app: FastAPI):
     mock_task = asyncio.create_task(_mock_keeper())
     auto_task = asyncio.create_task(_broker_auto_keeper())
     sched_task = asyncio.create_task(_paper_session_keeper())
+    archive_task = asyncio.create_task(_paper_archive_keeper())
     try:
         await asyncio.to_thread(dhan.ensure_fresh_token)
     except Exception:
         pass
     yield
-    for task in (token_task, mock_task, auto_task, sched_task):
+    for task in (token_task, mock_task, auto_task, sched_task, archive_task):
         task.cancel()
         try:
             await task
@@ -241,8 +255,8 @@ def desk_status_payload() -> Dict[str, Any]:
         pos_rows = []
         broker_ok = False
     unreal = round(sum(float(r.get("unrealized_pnl") or 0) for r in pos_rows), 2)
-    blotter = books.trades_today(_books())
-    compass = books.signals_today(_books())
+    blotter = _trades_payload()
+    compass = _signals_payload()
     realized = float(blotter.get("total_realized_pnl") or 0)
     today_net = round(realized + unreal, 2)
     book_rows = books.books_snapshot(_books(), position_rows=pos_rows)
@@ -492,8 +506,13 @@ def runner_stop(body: StopRunnerBody, _: None = Depends(require_api_key)):
         MOCK.exclusive_sync(MOCK.stop)
     if (RUNNER.mode or "").lower() == "paper":
         from app.schedule import pause_today
+        from app import paper_archive
 
         pause_today()
+        try:
+            paper_archive.capture(reason="ui_stop")
+        except Exception:
+            pass
     RUNNER.persist()
     RUNNER.audit_event("trading.stop", operator_id=body.operator_id, reason=body.reason)
     return ok(
@@ -509,40 +528,96 @@ def runner_stop(body: StopRunnerBody, _: None = Depends(require_api_key)):
     )
 
 
+def _today_paper_archive() -> bool:
+    """True when this IST day already has a paper/live snapshot (evening review while mock is armed)."""
+    from app import paper_archive
+
+    arch = paper_archive.load()
+    return bool(arch and (arch.get("mode") or "").lower() in ("paper", "live"))
+
+
+def _trades_payload(day: Optional[str] = None) -> Dict[str, Any]:
+    payload = books.trades_today(_books(), day)
+    if int(payload.get("trade_count") or 0) > 0:
+        return payload
+    from app import paper_archive
+
+    arch = paper_archive.load(day)
+    saved = (arch or {}).get("trades")
+    if isinstance(saved, dict) and int(saved.get("trade_count") or 0) > 0:
+        return saved
+    return payload
+
+
+def _signals_payload(day: Optional[str] = None) -> Dict[str, Any]:
+    payload = books.signals_today(_books(), day)
+    if int(payload.get("count") or 0) > 0:
+        return payload
+    from app import paper_archive
+
+    arch = paper_archive.load(day)
+    saved = (arch or {}).get("signals")
+    if isinstance(saved, dict) and int(saved.get("count") or 0) > 0:
+        return saved
+    return payload
+
+
 @app.get("/api/v1/desk/positions")
 def positions(_: None = Depends(require_api_key)):
-    if _mock_on():
+    if _mock_on() and not _today_paper_archive():
         return ok(MOCK.exclusive_sync(MOCK.ledger.positions_grid))
     try:
         return ok(dhan.positions_grid())
     except Exception as exc:  # noqa: BLE001
+        from app import paper_archive
+
+        arch = paper_archive.load()
+        saved = (arch or {}).get("positions")
+        if isinstance(saved, dict):
+            return ok({**saved, "from_archive": True, "detail": str(exc)[:240]})
+        if _mock_on():
+            return ok(MOCK.exclusive_sync(MOCK.ledger.positions_grid))
         return ok({"rows": [], "row_count": 0, "snapshot_at": _now(), "detail": str(exc)})
 
 
 @app.get("/api/v1/desk/orders/open")
 def orders_open(_: None = Depends(require_api_key)):
-    if _mock_on():
+    if _mock_on() and not _today_paper_archive():
         return ok(MOCK.exclusive_sync(MOCK.ledger.open_orders))
     try:
         return ok(dhan.open_orders_response())
     except Exception as exc:  # noqa: BLE001
+        from app import paper_archive
+
+        arch = paper_archive.load()
+        saved = (arch or {}).get("orders_open")
+        if isinstance(saved, dict):
+            return ok({**saved, "from_archive": True, "detail": str(exc)[:240]})
+        if _mock_on():
+            return ok(MOCK.exclusive_sync(MOCK.ledger.open_orders))
         return ok({"orders": [], "count": 0, "snapshot_at": _now(), "detail": str(exc)})
 
 
 @app.get("/api/v1/desk/trades/today")
-def trades_today(_: None = Depends(require_api_key)):
-    """Today's closed/open rounds from shadow journals (not live positions)."""
-    if _mock_on():
+def trades_today(
+    day: Optional[str] = Query(None, description="IST calendar day YYYY-MM-DD; default today"),
+    _: None = Depends(require_api_key),
+):
+    """Today's closed/open rounds from shadow journals, with VPS archive fallback."""
+    if _mock_on() and not day and not _today_paper_archive():
         return ok(MOCK.exclusive_sync(MOCK.ledger.trades_today))
-    return ok(books.trades_today(_books()))
+    return ok(_trades_payload(day))
 
 
 @app.get("/api/v1/desk/signals/today")
-def signals_today(_: None = Depends(require_api_key)):
-    """Today's engine Trade Cards for Gate 5 shadow vs fills."""
-    if _mock_on():
+def signals_today(
+    day: Optional[str] = Query(None, description="IST calendar day YYYY-MM-DD; default today"),
+    _: None = Depends(require_api_key),
+):
+    """Today's engine Trade Cards, with VPS archive fallback."""
+    if _mock_on() and not day and not _today_paper_archive():
         return ok(MOCK.exclusive_sync(MOCK.ledger.signals_today))
-    return ok(books.signals_today(_books()))
+    return ok(_signals_payload(day))
 
 
 @app.get("/api/v1/desk/contracts")

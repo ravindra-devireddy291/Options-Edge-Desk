@@ -184,4 +184,4 @@ Stop in the UI while **paper** pauses paper-auto **only that IST day**. Kill swi
 
 `GET /status` additive: `execution`, `replay`, `paper_auto`, `signals_today`, `trades_today`, `log_events_today`, `last_error`.
 
-Events append to `data/audit/events_YYYY-MM-DD.jsonl` and order lines to `orders_YYYY-MM-DD.jsonl`.
+Events append to `data/audit/events_YYYY-MM-DD.jsonl` and order lines to `orders_YYYY-MM-DD.jsonl` (IST session day). Paper/live also overwrite `data/paper/YYYY-MM-DD.json` (positions, open orders, Day blotter, compass, Dhan trade book) on every place, ~30s while armed, and at session end. Survives mock overnight and desk restart. `GET /trades/today` and `/signals/today` optional `?day=YYYY-MM-DD`; if journals are empty the desk returns that archive.

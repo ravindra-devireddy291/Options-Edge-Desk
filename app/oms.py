@@ -34,7 +34,7 @@ def _audit_dir():
 def _persist_order(payload: Dict[str, Any]) -> None:
     audit_dir = _audit_dir()
     audit_dir.mkdir(parents=True, exist_ok=True)
-    day_u = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_u = session_day().isoformat()
     with (audit_dir / f"orders_{day_u}.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"ts": _now(), **payload}, default=str) + "\n")
 
@@ -496,6 +496,12 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
                 order={**order_rec, "state": "submitted", "broker": raw},
                 contract=contract.as_dict(),
             )
+        except Exception as shadow_exc:  # noqa: BLE001
+            RUNNER.audit_event("shadow.persist_failed", error=str(shadow_exc)[:240], client_order_id=client_oid)
+        try:
+            from app import paper_archive
+
+            paper_archive.capture(reason="order_place")
         except Exception:
             pass
         return finish(

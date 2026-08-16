@@ -93,6 +93,12 @@ def disarm(*, reason: str) -> None:
         return
     if (RUNNER.mode or "").lower() != "paper":
         return
+    try:
+        from app import paper_archive
+
+        paper_archive.capture(reason=reason)
+    except Exception:
+        pass
     RUNNER.stop_requested = True
     RUNNER.state = "STOPPED"
     RUNNER.persist()
