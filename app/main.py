@@ -1072,7 +1072,7 @@ async def ws_desk(websocket: WebSocket):
                     {"type": "signal.clear", "server_time": _now(), "data": {"trigger_id": last_tid}}
                 )
             last_tid = tid
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(1.0 if _mock_on() else 5.0)
     except WebSocketDisconnect:
         return
     except Exception:

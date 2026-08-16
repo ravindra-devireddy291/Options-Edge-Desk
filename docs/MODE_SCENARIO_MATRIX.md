@@ -104,7 +104,7 @@ Product needs **two roles** on that same pipe. Do **not** add a new trader route
 | Strategy entry (auto) | No | Yes |
 | Strategy exit / SL / TP (manual mock) | No — tape qty closed by engine | Yes, kind `sell` |
 | Strategy exit (auto) | No | Yes, kind `sell` |
-| User overlay BUY/SELL | No (user initiated) | No |
+| User overlay BUY/SELL | No (paper/live; user initiated) | **Mock auto: yes** `fill_notice`. Paper/live overlay: no |
 | 15:30 session square-off | No | Yes, kind `sell`, reason `session_close` |
 
 ---

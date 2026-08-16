@@ -7,13 +7,13 @@ Two roles share GET /triggers/active and WS signal.trigger:
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from app.runners.state import _now
 
 _lock = threading.RLock()
 _acked: Set[str] = set()
-_fill: Optional[Dict[str, Any]] = None
+_fills: List[Dict[str, Any]] = []
 
 
 def ack(trigger_id: str, action: str = "dismiss") -> Dict[str, Any]:
@@ -21,9 +21,8 @@ def ack(trigger_id: str, action: str = "dismiss") -> Dict[str, Any]:
     with _lock:
         if tid:
             _acked.add(tid)
-            global _fill
-            if _fill and str(_fill.get("trigger_id")) == tid:
-                _fill = None
+            global _fills
+            _fills = [f for f in _fills if str(f.get("trigger_id")) != tid]
     return {
         "accepted": True,
         "code": "OK",
@@ -144,21 +143,25 @@ def push_fill_notice(
         side=side_u,
     )
     with _lock:
-        global _fill
-        _acked.discard(str(trigger_id))
-        _fill = trig
+        global _fills
+        tid = str(trigger_id)
+        _acked.discard(tid)
+        _fills = [f for f in _fills if str(f.get("trigger_id")) != tid]
+        _fills.append(trig)
+        if len(_fills) > 40:
+            _fills = _fills[-40:]
     return {"active": True, "trigger": dict(trig)}
 
 
 def newest_fill(acked: Optional[Set[str]] = None) -> Dict[str, Any]:
+    """Oldest unacked fill so buy then sell both reach the UI."""
     with _lock:
-        if not _fill:
-            return {"active": False, "trigger": None}
-        tid = str(_fill.get("trigger_id") or "")
         hidden = set(acked or ()) | _acked
-        if tid in hidden:
-            return {"active": False, "trigger": None}
-        return {"active": True, "trigger": dict(_fill)}
+        for row in _fills:
+            tid = str(row.get("trigger_id") or "")
+            if tid and tid not in hidden:
+                return {"active": True, "trigger": dict(row)}
+        return {"active": False, "trigger": None}
 
 
 def newest_pending(

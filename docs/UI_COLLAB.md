@@ -83,10 +83,14 @@ Send `execution` on **all three** modes. Overlay (user scale-in / early exit) is
 
 ```
                  MANUAL                              AUTO
-MOCK    Approval → ticket → /orders/paper     Desk fills tape; fill_notice
+MOCK    Approval → ticket → /orders/paper     Desk fills tape (no Dhan); fill_notice BUY/SELL
 PAPER   PENDING approval → user places        Desk places PENDING on Dhan; fill_notice
 LIVE    Same as paper, live Dhan              Same as paper-auto, live Dhan
 ```
+
+Mock uses the **same routes and trigger JSON as live**. Only the data source changes (sim ledger vs Dhan).
+
+**One runner:** Start mock while paper is armed pauses desk paper-auto (Dhan positions are not flattened). Start paper discards mock. The weekday scheduler never arms live.
 
 | `GET /status` | Mock | Paper / live |
 |---------------|------|----------------|
@@ -110,13 +114,13 @@ Same object on `GET /triggers/active`, WS `signal.trigger`, and `health.tick.dat
 | `role` | When | UI |
 |--------|------|-----|
 | `approval` (or omitted) | Manual: strategy wants BUY/SELL | Center sheet → ticket if `placeable`. Ack `opened_ticket` or `dismiss`. |
-| `fill_notice` | Auto/engine **already** filled | Info only. `placeable` is always `false`. **Do not** open a place ticket. Show `note` / `filled_qty` / `filled_price` / `side`. Ack `dismiss`. |
+| `fill_notice` | Auto/engine **already** filled (buy or sell) | Info only. `placeable` is always `false`. **Do not** open a place ticket. Show `note` / `filled_qty` / `filled_price` / `side`. Ack `dismiss` to receive the **next** queued fill. |
 
 If `placeable: false` and `role` is `approval` (halt / kill / stopped): show the alert, disable confirm, do not place.
 
-Never `POST /orders/paper` just because a trigger appeared in **auto** (that double-fills mock tape).
+Never `POST /orders/paper` just because a trigger appeared in **auto** (that double-fills mock tape / double-places paper).
 
-Ack with the real `trigger_id` from the payload (not a fixture id).
+Ack with the real `trigger_id` from the payload (not a fixture id). Fill notices are a FIFO queue.
 
 ---
 
@@ -146,13 +150,14 @@ Empty books are valid: `rows: []`, `orders: []`, `trades: []`.
 |------|------|-----------|
 | `mode` includes `live` | Yes | Parse + Start venue Live |
 | `execution` on paper/live | Yes | Send on Start; show Manual/Auto for all modes |
-| Fill notice | Yes | Skip ticket; optional info sheet |
+| Fill notice | Yes (queue, buy and sell) | Skip ticket; info toast/sheet; ack to show next |
+| `paper_auto`, `signals_today`, `trades_today`, `log_events_today` | Yes on `/status` | Home/Day counts |
 | Contracts-driven expiry | Yes | Bind ticket to `/contracts` |
 | Nullable option quotes | Yes | Zod `number \| null`; `stale` |
 | Real `trigger_id` on ack | Yes | Copy from `/triggers/active` |
 | BFF HTTPS + key | Yes | Server env only |
 | Dhan token refresh | Ops (`token_ok`) | Banner only — no PIN/TOTP in trader UI |
-| Paper/live Start on VPS | Armed until Stop | Do not leave auto running unattended |
+| Weekday paper-auto | Desk scheduler | Show Paper Auto in cash window; mock auto off-hours |
 
 ---
 
@@ -163,17 +168,20 @@ Empty books are valid: `rows: []`, `orders: []`, `trades: []`.
 - Paper/live quotes stay empty until Dhan token is valid (`token_ok`). Mock does not need Dhan.
 - Lab `/research/stable*` is **mode-independent**. Mock tape is always the locked `most_stable` pack, not the Lab chip.
 
-## 9. Paper auto (weekday session)
+## 9. Weekday schedule (`DESK_PAPER_AUTO=1`)
 
-Set `DESK_PAPER_AUTO=1` on the desk. The process stays up overnight.
+Set `DESK_PAPER_AUTO=1` on the desk. The process stays up overnight. **Never arms live.**
 
-| Clock (IST, Mon–Fri) | Desk |
-|----------------------|------|
-| ~09:10 | Arms `mode: paper`, `execution: auto` for **both** NIFTY and BANKNIFTY books |
-| 09:15–15:30 | Places newest PENDING compass cards on Dhan paper; fill_notice on the interrupt pipe |
+| Clock (IST) | Desk |
+|-------------|------|
+| Weekend, before ~09:10 weekdays, after ~15:45 | **mock + auto** (sim tape, no Dhan). Fill_notice on every auto BUY/SELL |
+| Mon–Fri ~09:10 | Discard mock; arm **paper + auto** for **both** NIFTY and BANKNIFTY |
+| 09:15–15:30 | Place newest PENDING compass cards on Dhan paper; fill_notice |
 | 15:30–15:45 | One EOD flatten of leftover longs |
-| after 15:45 | Disarms. Next morning arms again |
+| after 15:45 | Disarm paper; arm mock + auto again |
 
-Stop in the UI pauses **only that IST day**. Live is never auto-armed.
+Stop in the UI while **paper** pauses paper-auto **only that IST day**. Kill switch blocks all schedule arms.
 
-Events append to `data/audit/events_YYYY-MM-DD.jsonl` and order lines to `orders_YYYY-MM-DD.jsonl`. Home/Day bind `today_net`, compass, blotter, `signals_today`, `trades_today`, `log_events_today`.
+`GET /status` additive: `execution`, `replay`, `paper_auto`, `signals_today`, `trades_today`, `log_events_today`, `last_error`.
+
+Events append to `data/audit/events_YYYY-MM-DD.jsonl` and order lines to `orders_YYYY-MM-DD.jsonl`.

@@ -234,6 +234,24 @@ def _place_mock(body: Any, *, dry_run: bool, sleeve: str, und: str, side: str, o
     RUNNER.orders_executed += 1
     RUNNER.audit_event("order.paper_place", mode="mock", operator_id=operator_id, trace_id=trace_id, client_order_id=client_oid)
     broker_oid = rec.get("broker_order_id") or rec.get("client_order_id")
+    if (MOCK.execution or "").lower() == "auto":
+        from app import triggers as trigger_store
+
+        kind = "sell" if side == "SELL" else "buy"
+        trigger_store.push_fill_notice(
+            trigger_id=f"fill-mock-{client_oid}",
+            kind=kind,
+            underlying=und,
+            expiry=cui.get("expiry"),
+            strike=cui.get("strike"),
+            option_type=cui.get("option_type"),
+            sleeve=sleeve,
+            lots=cui["lots"],
+            filled_qty=rec.get("quantity") or cui["quantity"],
+            filled_price=float(live_ltp),
+            tradingsymbol=str(cui.get("tradingsymbol") or cui.get("symbol") or ""),
+            side=side,
+        )
     return {
         "accepted": True,
         "code": "OK",

@@ -111,7 +111,7 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 
 | Resource | Interval |
 |----------|----------|
-| `GET /status` | 5–15 s while signed in |
+| `GET /status` | 5–15 s signed in; **~1 s** while `mode=mock` and `replay.playing` |
 | `GET /quotes/option` | 1 s while ticket open |
 | `GET /triggers/active` | 2–5 s if WS is down |
 | Book / Day | On tab focus + after place/cancel/sync |
@@ -172,6 +172,12 @@ Home snapshot. Poll this.
   "last_error": null,
   "last_cycle_at": "2026-08-15T04:01:00Z",
   "last_sync_at": "2026-08-15T08:32:00Z",
+  "execution": "auto",
+  "replay": null,
+  "paper_auto": true,
+  "signals_today": 4,
+  "trades_today": 2,
+  "log_events_today": 18,
   "books": [
     {
       "underlying": "NIFTY",
@@ -215,7 +221,16 @@ Home snapshot. Poll this.
 | `market_session` | enum | Home **Market closed** when `closed` |
 | `*_change_pct` | number \| null | Signed percent points (`0.42` = +0.42%) |
 | `today_net` | number | `realized_pnl_today + unrealized_pnl` (idle → `0`) |
+| `execution` | `manual` \| `auto` \| null | Who sends strategy orders. Always send on Start. |
+| `replay` | object \| null | Mock only: `{ day, speed, sim_time, playing }`. Paper/live → `null`. |
+| `paper_auto` | bool | `true` when weekday paper-auto is wanted **and** `execution` is `auto`. False/absent in mock. |
+| `signals_today` | number | Compass count (paper/live). Mock uses `/signals/today`. |
+| `trades_today` | number | Blotter count (paper/live). |
+| `log_events_today` | number | Audit lines today. Bind on Home/Day. |
+| `last_error` | string \| null | Token / last desk error. Banner only. |
 | `books` | array length 2 | Home sleeve lines; Order gate copy |
+
+Mock `GET /status`: `token_ok` is `true` (no Dhan). `market_session` follows **sim clock**. Quotes/PnL are synthetic. Same field names as paper/live.
 
 **Banner priority (UI):** kill/halt > broker down > market closed.
 
@@ -260,6 +275,8 @@ Idempotent: already armed → `accepted: true`, `code: OK`, message `"server was
 
 Start/Stop only arm trading. They do not boot or kill uvicorn.
 
+**One runner.** The desk has a single `mode`. Starting mock while paper-auto is running **pauses desk paper-auto** (no new Dhan places). It does **not** flatten existing Dhan paper positions. Starting paper/live **discards** the mock ledger. Live is never auto-armed by the weekday scheduler.
+
 ---
 
 ## 3. `POST /api/v1/desk/runner/stop`
@@ -285,6 +302,8 @@ Start/Stop only arm trading. They do not boot or kill uvicorn.
 ```
 
 UI: **Trading stopped**. Open positions and working orders stay. Cancel remains allowed. New place → `TRADING_STOPPED`.
+
+If `mode` was `paper` when Stop was sent, the weekday scheduler **pauses paper-auto for the rest of that IST day** (`paused_day`). Mock off-hours may still auto-arm. Kill switch is the only way to halt everything.
 
 ---
 
@@ -773,7 +792,11 @@ Empty: “No signals yet. PENDING can open a ticket when trading is armed.”
 
 ## 15. `GET /api/v1/desk/triggers/active`
 
-Center alert. **Nothing is placed.** At most **one** active interrupt (newest PENDING wins).
+Center alert. **Nothing is placed.** At most **one** interrupt is returned at a time.
+
+Priority: unacked `fill_notice` (FIFO queue — oldest first) then, if `execution` is `manual`, newest PENDING `approval`. Auto never returns `approval`.
+
+Acking a `fill_notice` reveals the next queued buy/sell notice. Do not skip ack or later fills stay hidden.
 
 **Active:**
 
@@ -813,7 +836,9 @@ Center alert. **Nothing is placed.** At most **one** active interrupt (newest PE
 | `role` | UI |
 |--------|-----|
 | `approval` (or omitted) | Center alert → ticket if `placeable` |
-| `fill_notice` | Info only. `placeable` is always false. Do **not** open a place ticket. Show `filled_qty` / `filled_price` / `side`. |
+| `fill_notice` | Info only. `placeable` is always false. Do **not** open a place ticket. Show `note` / `filled_qty` / `filled_price` / `side` (`BUY` or `SELL`). Toast or info sheet. Ack `dismiss`. |
+
+Mock **auto** emits `fill_notice` for every desk-placed fill: tape entry (buy), tape exit (sell), overlay place while auto, and 15:30 square-off (sell). Same JSON as paper/live auto after a Dhan fill.
 
 If `placeable: false` and `role` is `approval` (halt / kill / stopped): still show the alert. Confirm at 40% opacity; tap must not place. `meta`: `"Trading halted — cannot place."`
 
@@ -916,7 +941,8 @@ Optional. Health ticks only — connecting does **not** advance trading cycles o
 ```
 
 `health.tick.data` is a subset of `GET /status` plus `trigger` (same object as `GET /triggers/active`).  
-`signal.trigger.data` matches `GET /triggers/active.trigger`.
+`signal.trigger.data` matches `GET /triggers/active.trigger`.  
+Tick interval: **~1 s in mock**, ~5 s in paper/live.
 
 ---
 
@@ -1024,20 +1050,41 @@ Do not add `NEXT_PUBLIC_DESK_API_KEY`.
 
 ## Mock replay (additive)
 
-Same inventory. UI sends Mock on Start; drop local payload mocks.
+Same 19 trader routes. Mock is **live-shaped**: same Start body, same `/orders/paper`, same interrupt pipe. The only difference is **no broker APIs** (synthetic marks + sim ledger).
 
-**Full mode × execution matrix (including paper/live Auto and fill notices):** [`MODE_SCENARIO_MATRIX.md`](./MODE_SCENARIO_MATRIX.md).
+**Full mode × execution matrix:** [`MODE_SCENARIO_MATRIX.md`](./MODE_SCENARIO_MATRIX.md). Handshake: [`UI_COLLAB.md`](./UI_COLLAB.md).
 
 ```json
-{ "mode": "mock", "execution": "manual", "operator_id": "ui", "speed": 60 }
+{ "mode": "mock", "execution": "auto", "operator_id": "ui", "speed": 60 }
 ```
 
-`GET /status` adds `execution` and `replay: { day, speed, sim_time, playing }`. `market_session` follows sim time (works after 15:30 IST). Quotes and PnL are synthetic interpolations of locked-tape entry→exit.
+| `execution` | Desk | UI |
+|-------------|------|-----|
+| `manual` | `role: approval` at tape `entry_at`; user `POST /orders/paper` | Center sheet → ticket if `placeable` |
+| `auto` | Desk fills tape (and overlay places while auto); **`role: fill_notice`** for each BUY and SELL | Info toast/sheet. **Do not** place. Ack to see the next queued fill |
 
-- **manual:** triggers at signal time with `role: approval`; user `POST /orders/paper` (PENDING confirm is tape qty). Extra BUY is overlay.
-- **auto:** desk fills tape; `/triggers/active` (and WS) emit `role: fill_notice`, `placeable: false` after entry, tape exit, and 15:30. Overlay buy/sell still uses `/orders/paper`. Tape `exit_at` closes tape qty only.
+- `GET /status` includes `execution` and `replay: { day, speed, sim_time, playing }`. `market_session` follows sim time.
 - Mock place always returns `broker_order_id` like `mock_broker_{uuid}`.
 - Positions may include additive `tape_qty` / `overlay_qty` (UI may ignore).
+- Tape `exit_at` closes **tape qty** only; overlay qty stays until user SELL or 15:30 square-off.
 - **sync:** HTTP 200 `OK` without Dhan.
 - Next mock Start resets the replay day. Stop freezes the ledger; process stays up.
+
+---
+
+## Weekday session schedule (as-built, `DESK_PAPER_AUTO=1`)
+
+Process stays up overnight. **Never arms `live`.** One runner (see Start).
+
+| Clock (IST) | Desk | UI |
+|-------------|------|-----|
+| Weekend / before ~09:10 Mon–Fri / after ~15:45 | Arms **mock + auto** (60x) if not already trading | Mock Auto; fill_notice on sim fills |
+| Mon–Fri ~09:10 | Discards mock; arms **paper + auto** both books | Paper Auto; Dhan marks; fill_notice on PENDING place |
+| 09:15–15:30 | Places newest PENDING compass cards on Dhan paper | Do not also POST `/orders/paper` for those cards |
+| 15:30–15:45 | One EOD flatten of leftover longs + fill_notice sell | Info only |
+| after 15:45 | Disarms paper; arms **mock + auto** again | Back to mock |
+
+UI **Stop** while paper: pause paper-auto **that IST day only**. Kill switch: no schedule arms.
+
+Home/Day bind `today_net`, `signals_today`, `trades_today`, `log_events_today`, `paper_auto`, `execution`, `mode`.
 

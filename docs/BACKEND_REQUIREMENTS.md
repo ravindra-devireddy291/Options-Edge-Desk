@@ -307,7 +307,7 @@ Reject examples:
 | Both books halted | `SHADOW_HALTED` | **Not started** |
 | Already armed | `OK` (idempotent `accepted: true`) | **Paper armed** (“server was already running”) |
 
-**Additive — mock replay (optional):** `mode` may be `"mock"`. Body may include `execution` (`manual` \| `auto`, default `manual`) and `speed` (default `60`). Mock never calls Dhan. `market_session` follows the **sim clock**. Auto fills tape entries with no triggers; Manual uses the same trigger → `POST /orders/paper` path. Start again in mock **resets** the replay day. See §27.
+**Additive — mock replay:** `mode` may be `"mock"`. Body may include `execution` (`manual` \| `auto`, default `manual`) and `speed` (default `60`). Mock never calls Dhan. Same interrupt pipe as live: manual → `approval`; auto → `fill_notice` on each BUY/SELL. `market_session` follows the **sim clock**. Start again in mock **resets** the replay day. See §27.
 
 ### `POST /runner/stop`
 
@@ -1029,7 +1029,7 @@ Questions that would block the UI should be answered as:
 
 - Yes, the field exists and is always present (use `null` if unknown).  
 - Yes, `code` is one of the enums in §12 / §13 / §14.  
-- Yes, the engine still does not place **in paper**. Mock + `execution: "auto"` is the only auto-fill exception (tape replay).
+- Yes, paper/live **auto** places PENDING via the desk (Dhan). Mock auto fills the sim tape only (no broker). Both emit `fill_notice`.
 
 ---
 
@@ -1057,8 +1057,8 @@ Optional Home control. Same routes. No new trader paths.
 
 - Sim session 09:15–15:30 IST on `replay.day`, accelerated by `speed` (60x ≈ 6 minutes wall).
 - Quotes/LTP/PnL are **synthetic** interpolations of locked-tape entry→exit (not 1m bars).
-- Manual: `GET /triggers/active` at signal time; user places.
-- Auto: desk fills tape entries; overlay `POST /orders/paper` still allowed. Tape exit sells `tape_qty` only. `/triggers/active` and WS emit `role: fill_notice` after autonomous fills.
+- Manual: `GET /triggers/active` at signal time (`role: approval`); user places.
+- Auto: desk fills tape entries; `/triggers/active` and WS emit `role: fill_notice` (FIFO) after each autonomous BUY/SELL including overlay while auto, tape exit, and 15:30. Overlay still `POST /orders/paper`. Tape exit sells `tape_qty` only.
 - Mock `POST /orders/paper` success always includes `broker_order_id` (`mock_broker_{uuid}`).
 - Ledger mutations are serialized with `asyncio.Lock`. A background `asyncio` loop ticks the sim independent of UI polling.
 - `POST /sync` in mock: `accepted: true` without Dhan.
