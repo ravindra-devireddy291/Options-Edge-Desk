@@ -51,6 +51,18 @@ class Settings:
     audit_dir: Path
 
 
+def cors_allowed_origins() -> list[str]:
+    """Browser origins permitted by CORSMiddleware (comma-separated override in env)."""
+    raw = (os.environ.get("CORS_ALLOWED_ORIGINS") or "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return [
+        "https://desk.ravindra-devireddy.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     _load_dotenv()

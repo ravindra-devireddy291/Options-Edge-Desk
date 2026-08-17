@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.auth import get_settings, require_api_key, require_ws_api_key
+from app.auth import cors_allowed_origins, get_settings, require_api_key, require_ws_api_key
 from app.books import adapters as books
 from app.brokers.dhan import client as dhan
 from app.brokers.dhan.contracts import chain_snapshot, default_lot_size, resolve_contract
@@ -125,8 +125,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Options Edge Desk", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=cors_allowed_origins(),
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

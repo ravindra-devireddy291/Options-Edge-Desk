@@ -25,7 +25,7 @@ DESK_API_URL=http://127.0.0.1:8080
 DESK_API_KEY=<same as desk>
 ```
 
-Hosted desk: set `DESK_API_URL` to the HTTPS origin (Cloudflare). See [docs/UI_COLLAB.md](docs/UI_COLLAB.md).
+Hosted desk: set `DESK_API_URL` to `https://deskapi.ravindra-devireddy.com` (production) or your local tunnel. See [docs/UI_COLLAB.md](docs/UI_COLLAB.md).
 
 ## VPS
 
