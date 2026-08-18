@@ -58,6 +58,7 @@ class MockLedger:
                     "expiry": ev["expiry"],
                     "ltp": ev["entry"],
                     "created_at": to_utc_z(ev["entry_at"]),
+                    "security_id": ev.get("security_id"),
                     "event_id": ev["signal_id"],
                 }
             )
@@ -403,7 +404,37 @@ class MockLedger:
             pos["unrealized_pnl"] = round((ltp - float(pos["average_price"])) * int(pos["qty"]), 2)
 
     def positions_grid(self) -> Dict[str, Any]:
-        rows = [dict(p) for p in self.positions.values() if int(p.get("qty") or 0) != 0]
+        rows = []
+        for p in self.positions.values():
+            qty = int(p.get("qty") or 0)
+            if qty == 0:
+                continue
+            rows.append(
+                {
+                    "symbol": p.get("symbol"),
+                    "tradingsymbol": p.get("tradingsymbol") or p.get("symbol"),
+                    "underlying": p.get("underlying"),
+                    "security_id": p.get("security_id"),
+                    "expiry": p.get("expiry"),
+                    "strike": p.get("strike"),
+                    "option_type": p.get("option_type"),
+                    "sleeve": p.get("sleeve"),
+                    "side": p.get("side") or ("LONG" if qty > 0 else "SHORT"),
+                    "qty": qty,
+                    "quantity": qty,
+                    "lots": p.get("lots"),
+                    "lot_size": p.get("lot_size"),
+                    "average_price": p.get("average_price"),
+                    "mark_price": p.get("mark_price") or p.get("ltp"),
+                    "ltp": p.get("ltp"),
+                    "unrealized_pnl": p.get("unrealized_pnl"),
+                    "broker_qty": qty,
+                    "shadow_qty": 0,
+                    "exit_tracked": False,
+                    "drift_status": "broker_only",
+                    "exit_profile": None,
+                }
+            )
         return {"rows": rows, "row_count": len(rows), "snapshot_at": _now(), "detail": None}
 
     def open_orders(self) -> Dict[str, Any]:

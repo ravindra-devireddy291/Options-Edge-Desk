@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -309,6 +309,17 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
     if und not in ("NIFTY", "BANKNIFTY"):
         return finish(_reject("CONTRACT_RESOLVE_FAILED", f"unknown underlying {und}"))
 
+    if (RUNNER.mode or "").lower() == "live":
+        from app.auth import get_settings
+
+        settings = get_settings()
+        if not settings.live_enabled:
+            return finish(_reject("LIVE_DISABLED", "Live is off until DESK_LIVE_ENABLED=1 after client confirmation."))
+        book_ok = settings.live_nifty if und == "NIFTY" else settings.live_banknifty
+        if not book_ok:
+            flag = "LIVE_NIFTY" if und == "NIFTY" else "LIVE_BANKNIFTY"
+            return finish(_reject("LIVE_BOOK_DISABLED", f"{und} live is off until {flag}=1."))
+
     if (RUNNER.mode or "").lower() == "mock":
         return finish(_place_mock(body, dry_run=dry_run, sleeve=sleeve, und=und, side=side, operator_id=operator_id, trace_id=trace_id))
 
@@ -329,6 +340,10 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
     gate = _gate_payload(gate_raw, sleeve)
 
     day = str(getattr(body, "day", None) or session_day().isoformat())
+    try:
+        sess_d = date.fromisoformat(day[:10])
+    except ValueError:
+        sess_d = session_day()
     contract = None
     try:
         contract = resolve_contract(
@@ -338,7 +353,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
             symbol=getattr(body, "symbol", None) or "",
             security_id=getattr(body, "security_id", None),
             expiry=getattr(body, "expiry", None),
-            session_day=session_day(),
+            session_day=sess_d,
         )
     except Exception as exc:  # noqa: BLE001
         extra: Dict[str, Any] = {"gate": gate}

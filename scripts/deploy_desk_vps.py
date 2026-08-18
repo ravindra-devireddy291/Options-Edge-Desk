@@ -38,6 +38,8 @@ FILES = [
     "app/desk_log.py",
     "app/schedule.py",
     "app/paper_archive.py",
+    "app/paper_e2e.py",
+    "app/lab_sync.py",
     "app/ws_hub.py",
     "app/desk_events.py",
     "app/mock/__init__.py",
@@ -132,10 +134,17 @@ want={
  'BN_LAB_ROOT':'/root/Options-Edge-Lab',
  'NIFTY_CONFIG':'config/rungs/paper_2l_nifty_tier2_recommended.yaml',
  'BN_CONFIG':'config/edge_book_2l_dd20.yaml',
- 'LIVE_NIFTY':'0',
- 'LIVE_BANKNIFTY':'0',
- 'DESK_PAPER_AUTO':'1',
+ 'DESK_PAPER_AUTO': vals.get('DESK_PAPER_AUTO') or '1',
 }
+# Preserve live cutover flags. Default off only when missing — never reset a live enable.
+for k, default in (
+    ('LIVE_NIFTY', '0'),
+    ('LIVE_BANKNIFTY', '0'),
+    ('DESK_LIVE_ENABLED', '0'),
+    ('DESK_MOCK_LOOP', '0'),
+):
+    if not vals.get(k):
+        want[k] = default
 key=os.environ.get('DESK_API_KEY','').strip()
 if key: want['DESK_API_KEY']=key
 elif not vals.get('DESK_API_KEY') or vals.get('DESK_API_KEY') in ('','change-me-desk-api-key'):
@@ -169,32 +178,46 @@ print('env keys', sorted(vals))
         f"chroot {CHROOT} bash -lc '{PY} -m pip install -q fastapi uvicorn pyyaml pydantic websockets python-dotenv tzdata'",
         timeout=300,
     )
-    # Prefer systemd when available; otherwise nohup (this VPS uses chroot without host systemd)
-    systemd_ok = run(
+    # Host systemd unit (chroot has no dbus). SIGTERM so lifespan can snapshot paper.
+    host_unit = run(
         c,
-        f"chroot {CHROOT} bash -lc 'command -v systemctl >/dev/null && systemctl daemon-reload 2>/dev/null; echo SYSTEMD_OK'",
+        "test -f /etc/systemd/system/edge-desk.service && echo HAS_HOST_UNIT || true",
         check=False,
     )
-    if "SYSTEMD_OK" in systemd_ok and "Failed to connect to bus" not in systemd_ok:
+    if "HAS_HOST_UNIT" in host_unit:
         run(
             c,
-            f"cp {CHROOT}{REMOTE}/deploy/edge-desk.service {CHROOT}/etc/systemd/system/edge-desk.service; "
-            f"chroot {CHROOT} bash -lc 'systemctl daemon-reload; systemctl enable edge-desk; systemctl restart edge-desk; "
-            f"sleep 2; systemctl is-active edge-desk; curl -s http://127.0.0.1:8080/healthz || true'",
-            timeout=120,
+            "systemctl daemon-reload; systemctl restart edge-desk; sleep 3; "
+            "systemctl is-active edge-desk; curl -s --max-time 10 http://127.0.0.1:8080/healthz || true",
+            timeout=60,
             check=False,
         )
     else:
-        print("systemd unavailable — starting via Python env loader", flush=True)
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from vps_desk_restart import restart_desk
+        systemd_ok = run(
+            c,
+            f"chroot {CHROOT} bash -lc 'command -v systemctl >/dev/null && systemctl daemon-reload 2>/dev/null; echo SYSTEMD_OK'",
+            check=False,
+        )
+        if "SYSTEMD_OK" in systemd_ok and "Failed to connect to bus" not in systemd_ok:
+            run(
+                c,
+                f"cp {CHROOT}{REMOTE}/deploy/edge-desk.service {CHROOT}/etc/systemd/system/edge-desk.service; "
+                f"chroot {CHROOT} bash -lc 'systemctl daemon-reload; systemctl enable edge-desk; systemctl restart edge-desk; "
+                f"sleep 2; systemctl is-active edge-desk; curl -s http://127.0.0.1:8080/healthz || true'",
+                timeout=120,
+                check=False,
+            )
+        else:
+            print("systemd unavailable — starting via Python env loader", flush=True)
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from vps_desk_restart import restart_desk
 
-        desk_key = os.environ.get("DESK_API_KEY", "").strip() or "hEe5070y9VnztqB1a2aFu9wkpw4L+PxcdQDbzuJjK+c="
+            desk_key = os.environ.get("DESK_API_KEY", "").strip() or "hEe5070y9VnztqB1a2aFu9wkpw4L+PxcdQDbzuJjK+c="
 
-        def _run(cmd: str, timeout: int = 120) -> str:
-            return run(c, cmd, timeout=timeout, check=False)
+            def _run(cmd: str, timeout: int = 120) -> str:
+                return run(c, cmd, timeout=timeout, check=False)
 
-        restart_desk(_run, desk_key)
+            restart_desk(_run, desk_key)
     print(run(c, f"tail -n 30 {CHROOT}{REMOTE}/logs/desk.out 2>/dev/null || true", check=False), flush=True)
     c.close()
     print("deployed", REMOTE, flush=True)

@@ -26,7 +26,7 @@ Start body:
 |-------|----------|
 | `mode: "mock"` | Arms sim ledger. No Dhan for quotes/place/PnL. |
 | `mode: "paper"` | Arms Dhan paper + lab shadow. Honors `execution`. |
-| `mode: "live"` | Arms Dhan live credentials. Honors `execution`. |
+| `mode: "live"` | Same desk as paper against Dhan live. Requires `DESK_LIVE_ENABLED` + both `LIVE_*` book flags. Weekday schedule arms live after that cutover. |
 | `execution` | `manual` \| `auto` on **all** modes. |
 
 ```

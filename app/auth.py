@@ -48,6 +48,8 @@ class Settings:
     bn_config: str
     live_nifty: bool
     live_banknifty: bool
+    live_enabled: bool
+    mock_loop: bool
     audit_dir: Path
 
 
@@ -89,6 +91,8 @@ def get_settings() -> Settings:
         bn_config=os.environ.get("BN_CONFIG") or "config/edge_book_2l_dd20.yaml",
         live_nifty=os.environ.get("LIVE_NIFTY", "0").strip() in ("1", "true", "yes"),
         live_banknifty=os.environ.get("LIVE_BANKNIFTY", "0").strip() in ("1", "true", "yes"),
+        live_enabled=os.environ.get("DESK_LIVE_ENABLED", "0").strip().lower() in ("1", "true", "yes"),
+        mock_loop=os.environ.get("DESK_MOCK_LOOP", "0").strip().lower() in ("1", "true", "yes"),
         audit_dir=root / "data" / "audit",
     )
 

@@ -10,6 +10,7 @@ from app import triggers as trigger_store
 from app.books import adapters as books
 from app.brokers.dhan import client as dhan
 from app.oms import place_paper
+from app.mock import MOCK
 from app.runners.state import RUNNER
 from app.session import market_session, session_day
 
@@ -19,32 +20,49 @@ _eod_done_day: Optional[str] = None
 _loaded_day: Optional[str] = None
 
 
+def _trade_day() -> str:
+    if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
+        return MOCK.clock.day.isoformat()
+    return session_day().isoformat()
+
+
+def _persist_day() -> str:
+    """IST calendar day for paper/live auto state — never mock tape day."""
+    return session_day().isoformat()
+
+
 def load_persisted() -> None:
     global _eod_done_day, _loaded_day
-    day = session_day().isoformat()
+    day = _persist_day()
     if _loaded_day == day:
         return
     _fired.clear()
     _eod_done_day = None
     _loaded_day = day
     if not _STATE.exists():
+        _save()
         return
     try:
         raw = json.loads(_STATE.read_text(encoding="utf-8"))
     except Exception:
+        _save()
         return
     if str(raw.get("day") or "") != day:
+        # Roll stale file forward so disk matches the IST session.
+        _save()
         return
     _fired.update(str(x) for x in (raw.get("fired") or []))
     _eod_done_day = raw.get("eod_done_day")
 
 
 def _save() -> None:
+    if (RUNNER.mode or "").lower() not in ("paper", "live"):
+        return
     _STATE.parent.mkdir(parents=True, exist_ok=True)
     _STATE.write_text(
         json.dumps(
             {
-                "day": session_day().isoformat(),
+                "day": _persist_day(),
                 "fired": sorted(_fired),
                 "eod_done_day": _eod_done_day,
             }
@@ -105,8 +123,8 @@ def _place_signal(sig: Dict[str, Any], *, side: Optional[str] = None, force_eod:
         symbol=str(sig.get("symbol") or ""),
         strike=sig.get("target_strike") if sig.get("target_strike") is not None else sig.get("strike"),
         option_type=sig.get("option_type") or "PE",
-        expiry=str(sig.get("expiry") or session_day().isoformat()),
-        day=session_day().isoformat(),
+        expiry=sig.get("expiry") or None,
+        day=_trade_day(),
         tag="edge-desk-auto",
         dry_run=False,
         expected_ltp=ltp,
@@ -118,24 +136,69 @@ def _place_signal(sig: Dict[str, Any], *, side: Optional[str] = None, force_eod:
     return place_paper(body, _books())
 
 
+def _session_now():
+    if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
+        return MOCK.clock.now(), MOCK.clock.market_session()
+    from datetime import datetime
+    from app.session import IST
+
+    now = datetime.now(IST)
+    return now, market_session()
+
+
+def _compass() -> Dict[str, Any]:
+    if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
+        return MOCK.ledger.signals_today()
+    return books.signals_today(_books())
+
+
+def _positions() -> Dict[str, Any]:
+    if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
+        return MOCK.ledger.positions_grid()
+    return dhan.positions_grid()
+
+
+def _signal_due(sig: Dict[str, Any], now) -> bool:
+    created = sig.get("created_at")
+    if not created:
+        return True
+    try:
+        from datetime import datetime as _dt
+
+        dt = _dt.fromisoformat(str(created).replace("Z", "+00:00"))
+        return now >= dt
+    except Exception:
+        return True
+
+
 def tick() -> None:
-    """At most one autonomous Dhan place per call. Independent of UI polling."""
+    """At most one autonomous place per call — mock, paper, and live."""
     global _eod_done_day
-    if (RUNNER.mode or "").lower() not in ("paper", "live"):
+    mode = (RUNNER.mode or "").lower()
+    if mode not in ("paper", "live", "mock"):
         return
+    if mode == "live":
+        from app.auth import get_settings
+
+        s = get_settings()
+        if not (s.live_enabled and s.live_nifty and s.live_banknifty):
+            return
     if (RUNNER.execution or "manual").lower() != "auto":
         return
     if not RUNNER.trading_active():
         return
+    if mode == "mock" and not MOCK.loaded:
+        return
     load_persisted()
 
-    sess = market_session()
-    day = session_day().isoformat()
+    now, sess = _session_now()
+    day = session_day().isoformat() if mode != "mock" else (MOCK.clock.day.isoformat() if MOCK.loaded else session_day().isoformat())
 
     if sess == "open":
-        compass = books.signals_today(_books())
+        compass = _compass()
         pending = [s for s in (compass.get("signals") or []) if str(s.get("status") or "").upper() == "PENDING"]
         pending = [s for s in pending if str(s.get("signal_id") or "") not in _fired]
+        pending = [s for s in pending if _signal_due(s, now)]
         if pending:
             sig = pending[-1]
             sid = str(sig["signal_id"])
@@ -163,11 +226,6 @@ def tick() -> None:
                 )
         return
 
-    # Auto EOD only in the 15:30 IST square-off window — not on weekends / overnight Start.
-    from datetime import datetime
-    from app.session import IST
-
-    now = datetime.now(IST)
     if now.weekday() >= 5:
         return
     if not (now.hour == 15 and now.minute >= 30 and now.minute <= 45):
@@ -175,7 +233,7 @@ def tick() -> None:
     if _eod_done_day == day:
         return
     try:
-        grid = dhan.positions_grid()
+        grid = _positions()
     except Exception:
         return
     _eod_done_day = day
@@ -215,7 +273,7 @@ def tick() -> None:
         try:
             from app.desk_events import emit_position_remove, emit_position_upsert
 
-            grid = dhan.positions_grid()
+            grid = _positions()
             for row in list(grid.get("rows") or []):
                 qty = int(row.get("qty") or row.get("quantity") or 0)
                 if qty != 0:

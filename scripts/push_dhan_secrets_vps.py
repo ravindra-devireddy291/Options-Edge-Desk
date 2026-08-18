@@ -150,6 +150,8 @@ def main() -> int:
             "BN_CONFIG": "config/edge_book_2l_dd20.yaml",
             "LIVE_NIFTY": vals.get("LIVE_NIFTY") or "0",
             "LIVE_BANKNIFTY": vals.get("LIVE_BANKNIFTY") or "0",
+            "DESK_LIVE_ENABLED": vals.get("DESK_LIVE_ENABLED") or "0",
+            "DESK_MOCK_LOOP": vals.get("DESK_MOCK_LOOP") or "0",
             "DESK_PAPER_AUTO": vals.get("DESK_PAPER_AUTO") or "1",
             "DHAN_CLIENT_ID": client,
         }

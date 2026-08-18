@@ -164,10 +164,23 @@ def option_rows(underlying: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _is_exchange_symbol(symbol: str) -> bool:
+    """Lake rows use BANKNIFTY-Oct2026-57400-CE; Dhan master uses SEM_TRADING_SYMBOL."""
+    s = (symbol or "").strip()
+    if not s:
+        return False
+    if s.endswith("-FADE") or s.endswith("-ORB"):
+        return False
+    parts = s.split("-")
+    if len(parts) >= 3:
+        return False
+    return True
+
+
 def resolve_by_symbol(symbol: str, underlying: Optional[str] = None) -> Optional[Contract]:
-    sym = (symbol or "").strip().upper()
-    if not sym or sym.endswith("-FADE") or sym.endswith("-ORB"):
+    if not _is_exchange_symbol(symbol or ""):
         return None
+    sym = (symbol or "").strip().upper()
     und = (underlying or ("BANKNIFTY" if "BANKNIFTY" in sym else "NIFTY")).upper()
     for r in option_rows(und):
         if r["tradingsymbol"].upper() == sym or sym in r["tradingsymbol"].upper():
@@ -217,7 +230,7 @@ def resolve_contract(
             lot_size=int(DEFAULT_LOT.get(und, 1)),
         )
 
-    if symbol:
+    if symbol and _is_exchange_symbol(symbol):
         hit = resolve_by_symbol(symbol, und)
         if hit:
             return hit
@@ -231,20 +244,45 @@ def resolve_contract(
 
     day = session_day or date.today()
     exp_filter: Optional[date] = _parse_expiry(expiry) if expiry else None
-    candidates = [
-        r
-        for r in option_rows(und)
-        if abs(float(r["strike"]) - float(strike)) < 0.01
-        and r["option_type"] == opt
-        and r["expiry"] >= day
-    ]
-    if exp_filter:
-        candidates = [r for r in candidates if r["expiry"] == exp_filter]
+    if exp_filter and exp_filter == day:
+        # Journal/auto used to pass session day as expiry; that is not an option expiry.
+        exp_filter = None
+
+    def _candidates(*, refresh: bool) -> List[Dict[str, Any]]:
+        if refresh:
+            _load_master(force=True)
+        found = [
+            r
+            for r in option_rows(und)
+            if abs(float(r["strike"]) - float(strike)) < 0.01
+            and r["option_type"] == opt
+            and r["expiry"] >= day
+        ]
+        if exp_filter:
+            found = [r for r in found if r["expiry"] == exp_filter]
+        return found
+
+    candidates = _candidates(refresh=False)
+    if not candidates:
+        candidates = _candidates(refresh=True)
+    if not candidates:
+        step = 100.0 if und == "BANKNIFTY" else 50.0
+        nearby = [
+            r
+            for r in option_rows(und)
+            if r["option_type"] == opt
+            and r["expiry"] >= day
+            and abs(float(r["strike"]) - float(strike)) <= step * 2
+        ]
+        if exp_filter:
+            nearby = [r for r in nearby if r["expiry"] == exp_filter]
+        nearby.sort(key=lambda r: (abs(float(r["strike"]) - float(strike)), r["expiry"]))
+        candidates = nearby[:1]
     if not candidates:
         raise RuntimeError(
             f"No live {und} {strike} {opt} contract in scrip master for >= {day}"
         )
-    candidates.sort(key=lambda r: r["expiry"])
+    candidates.sort(key=lambda r: (abs(float(r["strike"]) - float(strike)), r["expiry"]))
     r = candidates[0]
     return Contract(
         underlying=und,

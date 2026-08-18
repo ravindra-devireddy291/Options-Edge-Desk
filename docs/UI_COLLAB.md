@@ -91,7 +91,7 @@ LIVE    Same as paper, live Dhan              Same as paper-auto, live Dhan
 
 Mock uses the **same routes and trigger JSON as live**. Only the data source changes (sim ledger vs Dhan).
 
-**One runner:** Start mock while paper is armed pauses desk paper-auto (Dhan positions are not flattened). Start paper discards mock. The weekday scheduler never arms live.
+**One runner:** Start mock while paper is armed pauses desk paper-auto (Dhan positions are not flattened). Start paper discards mock. The weekday scheduler arms **paper** until `DESK_LIVE_ENABLED=1` **and** `LIVE_NIFTY=1` **and** `LIVE_BANKNIFTY=1`; after that restart it arms **live** on the same 09:10–15:45 IST clock. It never arms live while those flags are off. Process boot is always STOPPED; the schedule tick is what arms the session.
 
 | `GET /status` | Mock | Paper / live |
 |---------------|------|----------------|

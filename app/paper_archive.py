@@ -33,6 +33,24 @@ def load(day: Optional[str] = None) -> Optional[Dict[str, Any]]:
         return None
 
 
+def summary(day: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Small status chip for Home — does not replace mock blotter."""
+    arch = load(day)
+    if not arch:
+        return None
+    trades = arch.get("trades") if isinstance(arch.get("trades"), dict) else {}
+    signals = arch.get("signals") if isinstance(arch.get("signals"), dict) else {}
+    return {
+        "day": arch.get("day"),
+        "saved_at": arch.get("saved_at"),
+        "reason": arch.get("reason"),
+        "mode": arch.get("mode"),
+        "trade_count": int(arch.get("trade_count") or trades.get("trade_count") or 0),
+        "signal_count": int(arch.get("signal_count") or signals.get("count") or 0),
+        "note": arch.get("note"),
+    }
+
+
 def capture(*, reason: str = "tick") -> Optional[Path]:
     """Write one JSON file for the IST session. Safe to call often (overwrite)."""
     from app.books import adapters as books
@@ -69,6 +87,14 @@ def capture(*, reason: str = "tick") -> Optional[Path]:
     except Exception:
         dhan_trades = []
 
+    trade_count = int((trades or {}).get("trade_count") or 0)
+    signal_count = int((signals or {}).get("count") or 0)
+    note = None
+    if trade_count == 0 and signal_count == 0:
+        note = (
+            "No compass cards and no Dhan fills this IST day. "
+            "Desk auto-place only fires on PENDING lab shadow journals."
+        )
     payload = {
         "day": day,
         "saved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -80,6 +106,9 @@ def capture(*, reason: str = "tick") -> Optional[Path]:
         "trades": trades,
         "signals": signals,
         "dhan_trade_book": dhan_trades,
+        "trade_count": trade_count,
+        "signal_count": signal_count,
+        "note": note,
     }
     path = snapshot_path(day)
     path.write_text(json.dumps(payload, default=str), encoding="utf-8")

@@ -64,9 +64,12 @@ async def _broker_auto_keeper() -> None:
 
     while True:
         try:
-            if (RUNNER.mode or "").lower() in ("paper", "live") and (RUNNER.execution or "").lower() == "auto":
+            if (RUNNER.mode or "").lower() in ("paper", "live", "mock") and (RUNNER.execution or "").lower() == "auto":
                 if RUNNER.trading_active():
-                    await asyncio.to_thread(auto_engine.tick)
+                    if (RUNNER.mode or "").lower() == "mock":
+                        await MOCK.exclusive(auto_engine.tick)
+                    else:
+                        await asyncio.to_thread(auto_engine.tick)
         except Exception:
             pass
         await asyncio.sleep(1.0)
@@ -82,6 +85,18 @@ async def _paper_session_keeper() -> None:
         except Exception:
             pass
         await asyncio.sleep(5.0)
+
+
+async def _lab_journal_keeper() -> None:
+    """Weekday cash hours: refresh lab shadow journals so paper/live compass fills."""
+    from app import lab_sync
+
+    while True:
+        try:
+            await asyncio.to_thread(lab_sync.tick)
+        except Exception:
+            pass
+        await asyncio.sleep(180.0)
 
 
 async def _paper_archive_keeper() -> None:
@@ -102,6 +117,9 @@ async def lifespan(_app: FastAPI):
     dhan.load_dotenv()
     get_settings()
     RUNNER.load()
+    from app import auto_engine
+
+    auto_engine.load_persisted()
     MOCK.bind_loop(asyncio.get_running_loop())
     HUB.bind_loop(asyncio.get_running_loop())
     token_task = asyncio.create_task(_token_keeper())
@@ -109,12 +127,20 @@ async def lifespan(_app: FastAPI):
     auto_task = asyncio.create_task(_broker_auto_keeper())
     sched_task = asyncio.create_task(_paper_session_keeper())
     archive_task = asyncio.create_task(_paper_archive_keeper())
+    lab_task = asyncio.create_task(_lab_journal_keeper())
     try:
         await asyncio.to_thread(dhan.ensure_fresh_token)
     except Exception:
         pass
     yield
-    for task in (token_task, mock_task, auto_task, sched_task, archive_task):
+    try:
+        from app import paper_archive
+
+        if (RUNNER.mode or "").lower() in ("paper", "live"):
+            await asyncio.to_thread(paper_archive.capture, reason="shutdown")
+    except Exception:
+        pass
+    for task in (token_task, mock_task, auto_task, sched_task, archive_task, lab_task):
         task.cancel()
         try:
             await task
@@ -216,6 +242,9 @@ def health_tick_payload() -> Dict[str, Any]:
         "replay",
         "paper_auto",
         "last_error",
+        "paper_saved",
+        "live_enabled",
+        "lab_journal",
     )}
     trig = _active_trigger()
     data["trigger"] = trig
@@ -242,6 +271,19 @@ def desk_status_payload() -> Dict[str, Any]:
         "execution": RUNNER.execution,
         "replay": MOCK.replay() if mode == "mock" and MOCK.loaded else None,
     }
+    try:
+        from app import paper_archive
+
+        base["paper_saved"] = paper_archive.summary()
+    except Exception:
+        base["paper_saved"] = None
+    try:
+        from app import lab_sync
+
+        base["lab_journal"] = lab_sync.status()
+    except Exception:
+        base["lab_journal"] = None
+    base["live_enabled"] = bool(get_settings().live_enabled)
     if mode == "mock" and MOCK.loaded:
         extra = MOCK.status_fields()
         return {**base, **extra, "mode": "mock"}
@@ -361,7 +403,7 @@ def health_full_payload() -> Dict[str, Any]:
 # ---------- routes ----------
 
 def _positions_payload() -> Dict[str, Any]:
-    if _mock_on() and not _today_paper_archive():
+    if _mock_on():
         return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
     try:
         return dhan.positions_grid()
@@ -372,13 +414,11 @@ def _positions_payload() -> Dict[str, Any]:
         saved = (arch or {}).get("positions")
         if isinstance(saved, dict):
             return {**saved, "from_archive": True, "detail": str(exc)[:240]}
-        if _mock_on():
-            return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
         return {"rows": [], "row_count": 0, "snapshot_at": _now(), "detail": str(exc)}
 
 
 def _orders_payload() -> Dict[str, Any]:
-    if _mock_on() and not _today_paper_archive():
+    if _mock_on():
         return MOCK.exclusive_sync(MOCK.ledger.open_orders)
     try:
         return dhan.open_orders_response()
@@ -389,14 +429,12 @@ def _orders_payload() -> Dict[str, Any]:
         saved = (arch or {}).get("orders_open")
         if isinstance(saved, dict):
             return {**saved, "from_archive": True, "detail": str(exc)[:240]}
-        if _mock_on():
-            return MOCK.exclusive_sync(MOCK.ledger.open_orders)
         return {"orders": [], "count": 0, "snapshot_at": _now(), "detail": str(exc)}
 
 
 def desk_snapshot_payload() -> Dict[str, Any]:
     """Composite boot/reconcile — nests existing list shapes (UI §1b)."""
-    if _mock_on() and not _today_paper_archive():
+    if _mock_on():
         status = MOCK.exclusive_sync(desk_status_payload)
         positions = MOCK.exclusive_sync(MOCK.ledger.positions_grid)
         orders = MOCK.exclusive_sync(MOCK.ledger.open_orders)
@@ -404,12 +442,12 @@ def desk_snapshot_payload() -> Dict[str, Any]:
         signals = MOCK.exclusive_sync(MOCK.ledger.signals_today)
         triggers = MOCK.exclusive_sync(_active_trigger)
     else:
-        status = MOCK.exclusive_sync(desk_status_payload) if _mock_on() else desk_status_payload()
+        status = desk_status_payload()
         positions = _positions_payload()
         orders = _orders_payload()
         trades = _trades_payload()
         signals = _signals_payload()
-        triggers = MOCK.exclusive_sync(_active_trigger) if _mock_on() else _active_trigger()
+        triggers = _active_trigger()
     return {
         "snapshot_at": _now(),
         "seq": RUNNER.seq,
@@ -481,6 +519,7 @@ class StartRunnerBody(BaseModel):
     max_cycles: Optional[int] = None
     operator_id: str = "ops"
     confirm_live: bool = False
+    loop: Optional[bool] = None
 
 
 class StopRunnerBody(BaseModel):
@@ -510,6 +549,44 @@ def runner_start(body: StartRunnerBody, _: None = Depends(require_api_key)):
                 "message": "Kill switch is on. Trading was not started.",
             }
         )
+    if mode == "live":
+        settings = get_settings()
+        if not settings.live_enabled:
+            return ok(
+                {
+                    "accepted": False,
+                    "code": "LIVE_DISABLED",
+                    "command": "start",
+                    "runner_state": RUNNER.state,
+                    "trading_active": False,
+                    "desk_process": "alive",
+                    "message": "Live is off until DESK_LIVE_ENABLED=1 after client confirmation.",
+                }
+            )
+        if not (settings.live_nifty and settings.live_banknifty):
+            return ok(
+                {
+                    "accepted": False,
+                    "code": "LIVE_DISABLED",
+                    "command": "start",
+                    "runner_state": RUNNER.state,
+                    "trading_active": False,
+                    "desk_process": "alive",
+                    "message": "Live books are off until LIVE_NIFTY=1 and LIVE_BANKNIFTY=1.",
+                }
+            )
+        if not body.confirm_live:
+            return ok(
+                {
+                    "accepted": False,
+                    "code": "LIVE_CONFIRM_REQUIRED",
+                    "command": "start",
+                    "runner_state": RUNNER.state,
+                    "trading_active": False,
+                    "desk_process": "alive",
+                    "message": "Live start requires confirm_live: true.",
+                }
+            )
     if mode in ("paper", "live"):
         shadow = books.shadow_book_status(_books())
         halted = list(shadow.get("halted_underlyings") or [])
@@ -534,8 +611,14 @@ def runner_start(body: StartRunnerBody, _: None = Depends(require_api_key)):
     RUNNER.last_error = None
     replay = None
     if mode == "mock":
-        speed = float(body.speed or 60)
-        replay = MOCK.exclusive_sync(lambda: MOCK.start(execution=execution, speed=speed))
+        from app.schedule import release_mock_hold
+
+        release_mock_hold()
+        speed = float(body.speed or 5)
+        loop = body.loop if body.loop is not None else bool(get_settings().mock_loop)
+        replay = MOCK.exclusive_sync(
+            lambda: MOCK.start(execution=execution, speed=speed, loop=loop)
+        )
         RUNNER.execution = execution
         RUNNER.replay_day = replay.get("day")
         RUNNER.speed = speed
@@ -583,8 +666,11 @@ def runner_stop(body: StopRunnerBody, _: None = Depends(require_api_key)):
     RUNNER.stop_requested = True
     RUNNER.state = "STOPPED"
     if (RUNNER.mode or "").lower() == "mock":
+        from app.schedule import hold_mock
+
         MOCK.exclusive_sync(MOCK.stop)
-    if (RUNNER.mode or "").lower() == "paper":
+        hold_mock()
+    if (RUNNER.mode or "").lower() in ("paper", "live"):
         from app.schedule import pause_today
         from app import paper_archive
 
@@ -606,14 +692,6 @@ def runner_stop(body: StopRunnerBody, _: None = Depends(require_api_key)):
             "message": "trading stopped (desk API + token renew stay online)",
         }
     )
-
-
-def _today_paper_archive() -> bool:
-    """True when this IST day already has a paper/live snapshot (evening review while mock is armed)."""
-    from app import paper_archive
-
-    arch = paper_archive.load()
-    return bool(arch and (arch.get("mode") or "").lower() in ("paper", "live"))
 
 
 def _trades_payload(day: Optional[str] = None) -> Dict[str, Any]:
@@ -658,7 +736,7 @@ def trades_today(
     _: None = Depends(require_api_key),
 ):
     """Today's closed/open rounds from shadow journals, with VPS archive fallback."""
-    if _mock_on() and not day and not _today_paper_archive():
+    if _mock_on() and not day:
         return ok(MOCK.exclusive_sync(MOCK.ledger.trades_today))
     return ok(_trades_payload(day))
 
@@ -669,7 +747,7 @@ def signals_today(
     _: None = Depends(require_api_key),
 ):
     """Today's engine Trade Cards, with VPS archive fallback."""
-    if _mock_on() and not day and not _today_paper_archive():
+    if _mock_on() and not day:
         return ok(MOCK.exclusive_sync(MOCK.ledger.signals_today))
     return ok(_signals_payload(day))
 

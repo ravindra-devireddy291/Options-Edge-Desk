@@ -367,12 +367,29 @@ def _time_ist(row: Dict[str, Any]) -> str:
     return ts or ""
 
 
+def _journal_row_is_trade(r: Dict[str, Any]) -> bool:
+    """True only for broker fills/orders or tradeable lab ok rows — not skip cards."""
+    lab = r.get("lab") or {}
+    fill = r.get("broker_fill") if isinstance(r.get("broker_fill"), dict) else {}
+    bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
+    if bo or fill:
+        return True
+    status_lab = str(lab.get("status") or "")
+    tradeable = bool(r.get("tradeable")) if "tradeable" in r else status_lab == "ok"
+    if not tradeable or status_lab != "ok":
+        return False
+    entry = _num(lab.get("entry"))
+    return entry is not None and entry > 0
+
+
 def trades_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str, Any]:
     """Closed (and still-open) rounds from today's shadow journals — not live positions."""
     day = day or _session_day().isoformat()
     trades: List[dict] = []
     for b in books:
         for i, r in enumerate(_read_journal(b, day, strict_day=True)):
+            if not _journal_row_is_trade(r):
+                continue
             lab = r.get("lab") or {}
             fill = r.get("broker_fill") if isinstance(r.get("broker_fill"), dict) else {}
             bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
@@ -488,14 +505,15 @@ def signals_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str
             bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
             status_lab = str(lab.get("status") or "")
             tradeable = bool(r.get("tradeable")) if "tradeable" in r else status_lab == "ok"
+            skip_blob = f"{status_lab} {exe.get('reason') or ''} {lab.get('notes') or ''}".lower()
             if bo or fill:
                 status = "EXECUTED"
             elif not tradeable or (status_lab and status_lab != "ok"):
-                status = "SKIPPED" if "skip" in str(exe.get("reason") or status_lab).lower() else "REJECTED"
+                status = "SKIPPED" if "skip" in skip_blob else "REJECTED"
             else:
                 status = "PENDING"
             opt = str(lab.get("side") or "").upper()
-            notes = str(exe.get("reason") or lab.get("notes") or status_lab or "")
+            notes = status_lab if status_lab and status_lab not in ("ok", "OK") else str(exe.get("reason") or lab.get("notes") or status_lab or "")
             idx += 1
             sleeve = str(r.get("sleeve") or "fade").lower()
             created = r.get("ts")
@@ -528,6 +546,7 @@ def signals_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str
                     "notes": notes,
                     "symbol": str(lab.get("symbol") or ""),
                     "expiry": lab.get("expiry"),
+                    "security_id": str(lab.get("security_id") or lab.get("securityId") or ""),
                     "ltp": _num(lab.get("ltp") or lab.get("entry")),
                     "created_at": created_iso,
                 }

@@ -1,0 +1,15 @@
+[Unit]
+Description=Options Edge Desk (Dhan FastAPI :8080 in chroot)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/sbin/chroot /mnt/sys /root/Options-Edge-Lab/.venv/bin/python3 /root/Options-Edge-Desk/scripts/boot_desk.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/mnt/sys/root/Options-Edge-Desk/logs/desk.out
+StandardError=append:/mnt/sys/root/Options-Edge-Desk/logs/desk.out
+
+[Install]
+WantedBy=multi-user.target

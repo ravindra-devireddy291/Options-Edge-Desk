@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
+import time as _time
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from app.brokers.dhan.contracts import DEFAULT_LOT
@@ -27,6 +28,8 @@ class MockEngine:
         self._fired_exit: set[str] = set()
         self._skipped: set[str] = set()
         self._eod_done: bool = False
+        self._loop_after: Optional[float] = None
+        self.loop_session = False
         self.loaded = False
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -64,7 +67,14 @@ class MockEngine:
     def is_active(self) -> bool:
         return (RUNNER.mode or "").lower() == "mock"
 
-    def start(self, *, execution: str = "manual", speed: float = DEFAULT_SPEED, replay_day: Optional[str] = None) -> Dict[str, Any]:
+    def start(
+        self,
+        *,
+        execution: str = "manual",
+        speed: float = DEFAULT_SPEED,
+        replay_day: Optional[str] = None,
+        loop: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         trades = load_tape_trades()
         day_s, source = pick_demo_days(trades)
         if replay_day:
@@ -72,19 +82,79 @@ class MockEngine:
         events = schedule_for_replay(trades, replay_day=day_s, source_days=source)
         day = date.fromisoformat(day_s)
         self.execution = execution if execution in ("manual", "auto") else "manual"
+        if loop is None:
+            try:
+                from app.auth import get_settings
+
+                loop = bool(get_settings().mock_loop)
+            except Exception:
+                loop = False
+        self.loop_session = bool(loop)
         self.events = events
         self._fired_entry.clear()
         self._fired_exit.clear()
         self._skipped.clear()
         self._eod_done = False
+        self._loop_after = None
         self.clock.reset(day, speed=speed)
         self.ledger.reset(day_s, events)
         self.loaded = True
         RUNNER.execution = self.execution
         RUNNER.replay_day = day_s
         RUNNER.speed = float(speed)
+        self._write_shadow_fixture(day_s, events)
+        try:
+            from app import auto_engine
+
+            auto_engine.reset()
+        except Exception:
+            pass
         self.tick()
-        return {"day": day_s, "execution": self.execution, "speed": float(speed), "n_events": len(events)}
+        return {
+            "day": day_s,
+            "execution": self.execution,
+            "speed": float(speed),
+            "n_events": len(events),
+            "loop": self.loop_session,
+        }
+
+    def _write_shadow_fixture(self, day: str, events: List[Dict[str, Any]]) -> None:
+        """Persist tape as lab-shaped JSONL so mock compass matches paper journals."""
+        from pathlib import Path
+        import json
+
+        dest_dir = Path(__file__).resolve().parents[2] / "data" / "mock_shadow"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / f"shadow_{day}.jsonl"
+        lines = []
+        for ev in events:
+            lines.append(
+                json.dumps(
+                    {
+                        "ts": to_utc_z(ev["entry_at"]),
+                        "sleeve": ev.get("sleeve") or "fade",
+                        "lab": {
+                            "day": day,
+                            "underlying": ev["underlying"],
+                            "side": ev.get("option_type") or "PE",
+                            "strike": ev.get("strike"),
+                            "symbol": ev.get("symbol"),
+                            "entry": ev.get("entry"),
+                            "status": "ok",
+                            "action": "BUY",
+                            "lots": ev.get("lots"),
+                            "expiry": ev.get("expiry"),
+                            "ltp": ev.get("entry"),
+                            "gap_pts": ev.get("gap_pts"),
+                        },
+                        "tradeable": True,
+                        "execution": {"allow": True, "reason": "ok", "lots": ev.get("lots") or 1},
+                        "broker_fill": None,
+                    },
+                    default=str,
+                )
+            )
+        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def stop(self) -> None:
         self.clock.pause()
@@ -96,42 +166,38 @@ class MockEngine:
         self.clock.playing = False
 
     def tick(self) -> None:
-        """Active clock step: auto-fills, skip windows, tape exits, EOD square-off.
-
-        Independent of REST polling. Must run under exclusive() / exclusive_sync().
-        """
+        """Clock, marks, tape exits, EOD. Auto entries go through auto_engine (same as paper/live)."""
         if not self.loaded:
             return
         now = self.clock.now()
-        exec_mode = self.execution
         events = list(self.events)
         marks: Dict[str, float] = {}
         for ev in events:
             marks[ev["symbol"]] = option_mark(ev, now)
             sid = ev["signal_id"]
-            if now >= ev["entry_at"] and sid not in self._fired_entry:
-                self._fired_entry.add(sid)
-                if exec_mode == "auto":
-                    self._auto_entry(ev, now)
-                # manual: trigger via PENDING signal (already in ledger)
-            if exec_mode == "manual" and sid not in self._skipped and sid not in self._fired_exit:
-                st = self.ledger.signal_status(sid)
-                if st == "PENDING" and now >= ev["skip_at"]:
-                    self._skipped.add(sid)
-                    self.ledger.set_signal(sid, "SKIPPED", "ignored")
             if now >= ev["exit_at"] and sid not in self._fired_exit:
                 pos = self.ledger.find_event_position(sid)
                 if pos:
                     self._tape_exit(ev, now)
-                elif exec_mode == "manual":
-                    st = self.ledger.signal_status(sid)
-                    if st == "PENDING":
-                        self.ledger.set_signal(sid, "SKIPPED", "ignored")
                 self._fired_exit.add(sid)
         self.ledger.mark_all(marks)
+
         if now >= self.clock.session_close() and not self._eod_done:
             self._eod_done = True
             self._session_square_off()
+            if self.loop_session:
+                self._loop_after = _time.monotonic() + 1.5
+            else:
+                self.clock.pause()
+            return
+        if self.loop_session and self._eod_done and self._loop_after is not None and _time.monotonic() >= self._loop_after:
+            self._loop_after = None
+            self.start(
+                execution=self.execution,
+                speed=self.clock.speed,
+                replay_day=self.clock.day.isoformat(),
+                loop=True,
+            )
 
     def _session_square_off(self) -> None:
         """EOD failsafe: flatten leftover overlay / unsquared lots at last mark."""
@@ -255,7 +321,10 @@ class MockEngine:
         )
 
     def replay(self) -> Dict[str, Any]:
-        return self.clock.snapshot()
+        snap = self.clock.snapshot()
+        if self._loop_after is not None:
+            snap["playing"] = True
+        return snap
 
     def spots(self) -> Dict[str, Dict[str, Optional[float]]]:
         now = self.clock.now()

@@ -70,4 +70,14 @@ UI **Start trading / Stop trading** only arms/disarms the trading control plane.
 The VPS uvicorn process is never killed by these buttons — health, positions, signals,
 and token renew keep running.
 
+Weekday **paper-auto** (`DESK_PAPER_AUTO=1`) arms both books ~09:10 IST and disarms after 15:45.
+Live stays off until written client confirmation, then:
+
+```bash
+py -3 scripts/enable_live_vps.py --confirm-client-ready
+```
+
+That sets `DESK_LIVE_ENABLED=1`, `LIVE_NIFTY=1`, `LIVE_BANKNIFTY=1` and restarts the desk.
+The same clock then arms **live+auto**. Do not run this during the paper month.
+
 
