@@ -27,3 +27,4 @@ Paper Home equity = capital + PnL since DESK_PAPER_BOOK_START (2026-08-17). Trad
 2026-08-26 | D5 audit/tail | redact secrets; durable prefer; contract 3 kinds | D-P1 done; next D6 OOS if wanted
 2026-08-26 | D6–D8 research impress | oos/cost/scale/brief endpoints + tests + contract | Desk D1–D8 complete; UI next
 2026-08-27 | close non-ticket gaps | restart desk; smoke D1–D8 OK; UI allowlist+Zod+docs | plumbing 100%; UI screens U7–U15 remain
+2026-08-27 | sync git local→origin | desk+UI feat+master pushed 7934e34/afad1a3 | VPS SSH:22 unreachable from admin; retry deploy when host up
