@@ -21,6 +21,12 @@ def emit_position_upsert(row: Dict[str, Any]) -> None:
     if not row:
         return
     HUB.broadcast("position.upsert", dict(row))
+    try:
+        from app.mark_stream import note_position
+
+        note_position(row)
+    except Exception:
+        pass
 
 
 def emit_position_remove(row_or_key: Any) -> None:
@@ -31,6 +37,12 @@ def emit_position_remove(row_or_key: Any) -> None:
     if not key:
         return
     HUB.broadcast("position.remove", {"key": key})
+    try:
+        from app.mark_stream import drop_position
+
+        drop_position(key)
+    except Exception:
+        pass
 
 
 def emit_order_upsert(order: Dict[str, Any]) -> None:
@@ -50,6 +62,29 @@ def emit_trade_append(trade: Dict[str, Any]) -> None:
     if not trade:
         return
     HUB.broadcast("trade.append", dict(trade))
+
+
+def emit_mark_batch(data: Dict[str, Any]) -> None:
+    if not data:
+        return
+    HUB.broadcast("mark.batch", dict(data), bump=False)
+
+
+def emit_account_patch(data: Dict[str, Any]) -> None:
+    if not data:
+        return
+    HUB.broadcast("account.patch", dict(data), bump=False)
+
+
+def emit_signal_trigger(trigger: Dict[str, Any]) -> None:
+    if not trigger:
+        return
+    HUB.broadcast("signal.trigger", dict(trigger), bump=False)
+
+
+def emit_signal_clear(trigger_id: str) -> None:
+    tid = str(trigger_id or "")
+    HUB.broadcast("signal.clear", {"trigger_id": tid} if tid else {}, bump=False)
 
 
 def emit_mock_buy(pos: Dict[str, Any], order: Optional[Dict[str, Any]], trade: Optional[Dict[str, Any]]) -> None:

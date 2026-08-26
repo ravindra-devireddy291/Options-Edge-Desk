@@ -152,9 +152,18 @@ order_status   = TRANSIT | PENDING | TRADED | REJECTED | CANCELLED | … (pass b
 | 7 | POST | `/orders/cancel` | Book | yes — add `code` |
 | 8 | GET | `/trades/today` | Day | yes — **extend fill quality** |
 | 9 | GET | `/signals/today` | Day compass | yes |
+| 9b | GET | `/signals/rejected` | Decision log | yes |
+| 9c | GET | `/signals/last-cycle` | Decision log + funnel | yes |
 | 10 | POST | `/sync` | Home broker banner | yes — add `code` |
 | 11 | GET | `/research/stable` | Lab | yes |
 | 12 | GET | `/research/stable/{underlying}` | Lab | yes |
+| 12b | GET | `/research/g5` | G5 readiness meter (not fills today) | yes |
+| 12b2 | GET | `/research/oos` | Lab Trust train/OOS | yes |
+| 12b3 | GET | `/research/cost-honesty` | Lab cost honesty (BN) | yes |
+| 12b4 | GET | `/research/scale` | Lab capital scale (BN) | yes |
+| 12b5 | GET | `/research/brief` | Pre-market trade card | yes |
+| 12c | GET | `/safety/circuit-breaker` | Home Risk (pre-halt) | yes |
+| 12d | GET | `/audit/tail` | What-happened panel | yes |
 | 13 | GET | `/contracts` | Order + ticket | **new** |
 | 14 | GET | `/quotes/option` | Ticket live price | **new** |
 | 15 | GET | `/quotes/spot` | Tape (optional if on `/status`) | **new or fold into status** |
@@ -222,8 +231,34 @@ Poll this. Drive banners, Start/Stop enablement, Today net, spots.
       "open_lots": 10,
       "halted": false,
       "gates": [
-        { "sleeve": "fade", "allow": true, "lots": 10, "reason": null },
-        { "sleeve": "orb", "allow": false, "lots": 0, "reason": "fade loss" }
+        {
+          "sleeve": "fade",
+          "allow": true,
+          "lots": 10,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.018,
+          "day_pnl": -120.5,
+          "month_pnl": 4200.0,
+          "daily_cap": 2000.0,
+          "monthly_cap": 15000.0,
+          "premium_budget": 25000.0,
+          "deploy_frac": 0.25
+        },
+        {
+          "sleeve": "orb",
+          "allow": false,
+          "lots": 0,
+          "reason": "ORB is denied after a fade loss",
+          "dd_mode": "live",
+          "dd_pct": 0.018,
+          "day_pnl": -120.5,
+          "month_pnl": 4200.0,
+          "daily_cap": 2000.0,
+          "monthly_cap": 15000.0,
+          "premium_budget": 25000.0,
+          "deploy_frac": 0.25
+        }
       ]
     },
     {
@@ -235,8 +270,34 @@ Poll this. Drive banners, Start/Stop enablement, Today net, spots.
       "open_lots": 2,
       "halted": false,
       "gates": [
-        { "sleeve": "fade", "allow": true, "lots": 4, "reason": null },
-        { "sleeve": "orb", "allow": true, "lots": 2, "reason": null }
+        {
+          "sleeve": "fade",
+          "allow": true,
+          "lots": 4,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.01,
+          "day_pnl": 0.0,
+          "month_pnl": 800.0,
+          "daily_cap": 4000.0,
+          "monthly_cap": 30000.0,
+          "premium_budget": 50000.0,
+          "deploy_frac": 0.25
+        },
+        {
+          "sleeve": "orb",
+          "allow": true,
+          "lots": 2,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.01,
+          "day_pnl": 0.0,
+          "month_pnl": 800.0,
+          "daily_cap": 4000.0,
+          "monthly_cap": 30000.0,
+          "premium_budget": 50000.0,
+          "deploy_frac": 0.25
+        }
       ]
     }
   ]
@@ -484,11 +545,39 @@ Query: `underlying` required; `sleeve` optional.
   "underlying": "NIFTY",
   "lot_size": 65,
   "sleeves": [
-    { "sleeve": "fade", "allow": true, "lots": 10, "reason": null },
-    { "sleeve": "orb", "allow": false, "lots": 0, "reason": "ORB is denied after a fade loss" }
+    {
+      "sleeve": "fade",
+      "allow": true,
+      "lots": 10,
+      "reason": null,
+      "dd_mode": "live",
+      "dd_pct": 0.018,
+      "day_pnl": -120.5,
+      "month_pnl": 4200.0,
+      "daily_cap": 2000.0,
+      "monthly_cap": 15000.0,
+      "premium_budget": 25000.0,
+      "deploy_frac": 0.25
+    },
+    {
+      "sleeve": "orb",
+      "allow": false,
+      "lots": 0,
+      "reason": "ORB is denied after a fade loss",
+      "dd_mode": "live",
+      "dd_pct": 0.018,
+      "day_pnl": -120.5,
+      "month_pnl": 4200.0,
+      "daily_cap": 2000.0,
+      "monthly_cap": 15000.0,
+      "premium_budget": 25000.0,
+      "deploy_frac": 0.25
+    }
   ]
 }
 ```
+
+Headroom fields (`dd_*`, caps, `premium_budget`, `deploy_frac`) are pass-through from lab `GateDecision` — do not invent defaults when null. Same shape on `/status` → `books[].gates[]`.
 
 Order page copy: “NIFTY fade ALLOW 10 lots” / “ORB denied today. Lot size 65.”  
 Ticket line: `Gate ALLOW · max 10 lots · est. costs Rs …` (costs from dry_run).
@@ -776,6 +865,20 @@ Empty compass: “No signals yet. PENDING can open a ticket when trading is arme
 
 ---
 
+## 16b. Decision log — `GET /signals/rejected` + `GET /signals/last-cycle`
+
+**Allowlisted for trader UI.** Rejected row:
+
+`{ trace_id, underlying, sleeve, stage, reason, symbol, at, notes }`
+
+- `stage`: `signal` | `gate` | `oms`
+- `reason`: lab snake_case (`skip_*` preferred); UI humanizes
+- `symbol`: real or `null`
+
+Compass stays on `/signals/today`. Prefer `/signals/rejected` for the decision log alone.
+
+---
+
 ## 17. Triggers — `GET /triggers/active` (**new**)
 
 Center alert. **Nothing is placed.** At most **one** active interrupt (newest wins). If a ticket is open, UI shows **New signal** sheet; backend can still return the new trigger.
@@ -823,6 +926,49 @@ Sell trigger includes `suggested_lots` = position lots to close and live LTP of 
 If you skip ack, UI can hide locally; a later poll must not resurrect the same `trigger_id` after dismiss if ack exists.
 
 **Server must never place from a trigger.**
+
+---
+
+## 17b. Gate-5 readiness — `GET /research/g5`
+
+Read-only. Source: `{lab}/reports/shadow/G5_TRACKER.json` per book.  
+**Not** fills-today. Soft-fail missing files into `errors[]` (HTTP still 200 / envelope `ok`).
+
+Query: `underlying` optional (`NIFTY` \| `BANKNIFTY`).
+
+`data.books[].gate_G5` drives the unlock meter (`sessions_with_g5_fill`, `remaining`, `pass`, target 20).  
+`sessions` capped to last 40 (`sessions_truncated` when truncated). Desk never writes the tracker.
+
+---
+
+## 17b2–17b5. Research impress (OOS / cost / scale / brief)
+
+| Route | Notes |
+|-------|--------|
+| `GET /research/oos` | Normalized train/OOS windows; NIFTY + BN sources |
+| `GET /research/cost-honesty` | BN pre-aggregated months; no raw CSV |
+| `GET /research/scale` | BN AUM rows; no trades array |
+| `GET /research/brief?day=` | `TRADE_CARD_<day>.md` markdown per book |
+
+---
+
+## 17c. Circuit breaker — `GET /safety/circuit-breaker`
+
+**Allowlisted GET only** for Home Risk. Shape:
+
+`{ tripped, soft_halt, trip_reason, peak_dd_pct, limits, books[] }`
+
+- `peak_dd_pct` / `books[].dd_pct`: **fractions** (0.018 = 1.8%), not percent points  
+- `limits.daily_loss_limit_inr` may be `null`; `max_drawdown_from_peak_pct` from lab config  
+- **Never** `POST /safety/kill-switch` from trader UI
+
+---
+
+## 17d. Audit tail — `GET /audit/tail`
+
+**Allowlisted.** `?limit=` default 100, max 500. Secrets redacted to `"[redacted]"`.  
+`data`: `{ count, limit, events: [{ ts, kind, … }] }`.  
+Kinds stay raw (e.g. `trading.start`, `order.paper_place`, `trading.stop`); UI labels them.
 
 ---
 
@@ -960,13 +1106,17 @@ UI confirm → `POST /orders/cancel`. Allowed while stopped.
 |------|-----|
 | `GET /health/full` | Nested ops dump |
 | `GET /runner` | Use `/status` |
-| `/signals/last-cycle`, `/signals/rejected` | Use `/signals/today` |
-| `/safety/*` | Kill is read-only on `/status` |
-| `/audit/*` | Forensics |
+| `/safety/kill-switch` POST | Forbidden for trader UI |
 | `/orders/queue` | Internal |
 | `/cycle/tick` | Runner-internal |
 | `/system/token*` | No token/PIN/TOTP UI |
 | Live start / `confirm_live` | No live screen |
+
+`GET /signals/rejected` and `GET /signals/last-cycle` are **allowlisted** for the decision log (same rejected row shape). Compass still uses `/signals/today`.
+
+`GET /safety/circuit-breaker` is **allowlisted** for Home Risk (read-only). **Never** wire `POST /safety/kill-switch`.
+
+`GET /audit/tail` is **allowlisted** (redacted secrets; default limit 100, max 500).
 
 Keep these on the server for ops if they already exist.
 

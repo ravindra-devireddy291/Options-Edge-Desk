@@ -1,6 +1,7 @@
 """Paper place / cancel — UI is the only caller. Engine must never invoke this."""
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
@@ -14,6 +15,27 @@ from app.brokers.dhan.contracts import exchange_qty, resolve_contract
 from app.mock import MOCK
 from app.runners.state import RUNNER, _now
 from app.session import market_session, session_day
+
+
+def _schedule_feed_subscribe(security_id: str) -> None:
+    try:
+        from app.execution.runner import EXECUTION
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(EXECUTION.subscribe(str(security_id)))
+    except RuntimeError:
+        pass
+
+
+def _extract_broker_id(raw: Dict[str, Any]) -> Optional[str]:
+    raw_inner = raw.get("raw") if isinstance(raw, dict) else None
+    if not isinstance(raw_inner, dict):
+        return None
+    broker_id = raw_inner.get("orderId") or raw_inner.get("order_id")
+    data = raw_inner.get("data")
+    if isinstance(data, dict):
+        broker_id = broker_id or data.get("orderId")
+    return str(broker_id) if broker_id else None
 
 
 def dhan_correlation_id(trace_id: Any, client_oid: str) -> str:
@@ -150,6 +172,34 @@ def _place_mock(body: Any, *, dry_run: bool, sleeve: str, und: str, side: str, o
     )
     quote = {"ltp": q.get("ltp"), "bid": q.get("bid"), "ask": q.get("ask"), "quoted_at": q.get("quoted_at")}
     estimate = _estimate(q.get("ltp"), cui["quantity"])
+    if not dry_run:
+        try:
+            from app.execution.config import ARMOR
+            from app.execution.spread_chaser import next_limit_price
+            from app.execution.types import DepthSnapshot
+            from datetime import datetime, timezone
+
+            if ARMOR.enabled and ARMOR.mock_spread_gate:
+                bid = float(quote.get("bid") or quote.get("ltp") or 0)
+                ask = float(quote.get("ask") or quote.get("ltp") or 0)
+                ltp = float(quote.get("ltp") or bid or ask or 0)
+                depth = DepthSnapshot(
+                    security_id=str(cui["security_id"]),
+                    symbol=str(cui["symbol"]),
+                    bid=bid or ltp,
+                    ask=ask or ltp,
+                    ltp=ltp,
+                    ts=datetime.now(timezone.utc),
+                )
+                chase = next_limit_price(depth, ARMOR, side="sell" if side == "SELL" else "buy")
+                if chase.refused:
+                    return _reject(
+                        "SPREAD_REFUSE",
+                        chase.reason or "spread_too_wide",
+                        {"gate": gate, "contract": cui, "quote": quote, "spread_pct": chase.spread_pct},
+                    )
+        except Exception:
+            pass
     if not gate.get("allow"):
         return _reject("GATE_DENY", gate.get("reason") or "Sleeve blocked today.", {"gate": gate, "contract": cui, "quote": quote, "estimate": estimate})
     if int(cui["lots"]) > int(gate.get("lots") or 0) > 0:
@@ -272,6 +322,154 @@ def _place_mock(body: Any, *, dry_run: bool, sleeve: str, und: str, side: str, o
     }
 
 
+def _place_desk_paper(
+    *,
+    body: Any,
+    book: Any,
+    und: str,
+    sleeve: str,
+    side: str,
+    day: str,
+    contract: Any,
+    cui: Dict[str, Any],
+    gate: Dict[str, Any],
+    quote: Any,
+    live_ltp: float,
+    qty: int,
+    lots_i: int,
+    lot_size: int,
+    order_rec: Dict[str, Any],
+    client_oid: str,
+    operator_id: str,
+    trace_id: Any,
+) -> Dict[str, Any]:
+    """Simulate market fill; write journal broker_fill source=desk_paper; no Dhan money."""
+    from app import paper_oms
+
+    _schedule_feed_subscribe(contract.security_id)
+    force_eod = bool(getattr(body, "force_session_close", False)) and operator_id == "auto"
+    reason = "eod_flatten" if force_eod else ("exit" if side == "SELL" else "entry")
+
+    if side == "BUY":
+        filled = paper_oms.apply_buy(
+            underlying=und,
+            sleeve=sleeve,
+            security_id=str(contract.security_id),
+            symbol=str(contract.tradingsymbol),
+            qty=qty,
+            lots=lots_i,
+            lot_size=lot_size,
+            price=live_ltp,
+            client_order_id=client_oid,
+            expiry=getattr(contract, "expiry", None),
+            strike=getattr(contract, "strike", None),
+            option_type=getattr(contract, "option_type", None),
+        )
+        broker_id = filled["broker_order_id"]
+        try:
+            shadow_oms.record_broker_order(
+                book,
+                day=day,
+                sleeve=sleeve,
+                order={**order_rec, "state": "TRADED", "broker_order_id": broker_id},
+                contract=contract.as_dict(),
+            )
+            shadow_oms.record_entry_fill(
+                book,
+                day=day,
+                sleeve=sleeve,
+                entry=live_ltp,
+                qty=qty,
+                notes="desk_paper_entry",
+                source="desk_paper",
+            )
+        except Exception as shadow_exc:  # noqa: BLE001
+            RUNNER.audit_event("shadow.persist_failed", error=str(shadow_exc)[:240], client_order_id=client_oid)
+        pos_row = filled.get("position")
+    else:
+        filled = paper_oms.apply_sell(
+            security_id=str(contract.security_id),
+            qty=qty,
+            price=live_ltp,
+            client_order_id=client_oid,
+            reason=reason,
+        )
+        if not filled.get("ok"):
+            return _reject(
+                "NO_POSITION",
+                "No paper position to sell.",
+                {"contract": cui, "gate": gate, "quote": _quote_ui(quote)},
+            )
+        broker_id = filled["broker_order_id"]
+        try:
+            shadow_oms.record_broker_order(
+                book,
+                day=day,
+                sleeve=str(filled.get("sleeve") or sleeve),
+                order={**order_rec, "state": "TRADED", "broker_order_id": broker_id},
+                contract=contract.as_dict(),
+            )
+            shadow_oms.record_entry_fill(
+                book,
+                day=day,
+                sleeve=str(filled.get("sleeve") or sleeve),
+                entry=float(filled.get("entry_avg") or live_ltp),
+                qty=int(filled.get("sold_qty") or qty),
+                notes="desk_paper_exit",
+                source="desk_paper",
+                exit_px=float(filled.get("exit_price") or live_ltp),
+                net_pnl=float(filled.get("realized_pnl") or 0),
+            )
+        except Exception as shadow_exc:  # noqa: BLE001
+            RUNNER.audit_event("shadow.persist_failed", error=str(shadow_exc)[:240], client_order_id=client_oid)
+        pos_row = None
+
+    RUNNER.orders_executed += 1
+    RUNNER.audit_event(
+        "order.paper_filled",
+        client_order_id=client_oid,
+        broker_order_id=broker_id,
+        operator_id=operator_id,
+        trace_id=trace_id,
+        side=side,
+    )
+    _persist_order({**order_rec, "state": "TRADED", "broker_order_id": broker_id})
+    try:
+        from app import paper_archive
+
+        paper_archive.capture(reason="order_place_paper")
+    except Exception:
+        pass
+
+    placed = {
+        "accepted": True,
+        "code": "OK",
+        "message": None,
+        "order": {
+            "client_order_id": client_oid,
+            "broker_order_id": str(broker_id),
+            "order_id": str(broker_id),
+            "side": side,
+            "lots": lots_i,
+            "lot_size": lot_size,
+            "quantity": qty,
+            "price": live_ltp,
+            "status": "TRADED",
+        },
+        "contract": cui,
+        "gate": gate,
+        "quote": _quote_ui(quote),
+        "oms": "paper",
+    }
+    try:
+        from app.desk_events import emit_paper_place_result
+
+        emit_paper_place_result(placed, positions_row=pos_row)
+    except Exception:
+        pass
+    return placed
+
+
 def place_paper(body: Any, book_list) -> Dict[str, Any]:
     dry_run = bool(getattr(body, "dry_run", False))
     sleeve = str(getattr(body, "sleeve", None) or "fade").lower()
@@ -309,16 +507,13 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
     if und not in ("NIFTY", "BANKNIFTY"):
         return finish(_reject("CONTRACT_RESOLVE_FAILED", f"unknown underlying {und}"))
 
+    # Global mode "live" still requires DESK_LIVE_ENABLED; per-book routing is below.
     if (RUNNER.mode or "").lower() == "live":
         from app.auth import get_settings
 
         settings = get_settings()
         if not settings.live_enabled:
             return finish(_reject("LIVE_DISABLED", "Live is off until DESK_LIVE_ENABLED=1 after client confirmation."))
-        book_ok = settings.live_nifty if und == "NIFTY" else settings.live_banknifty
-        if not book_ok:
-            flag = "LIVE_NIFTY" if und == "NIFTY" else "LIVE_BANKNIFTY"
-            return finish(_reject("LIVE_BOOK_DISABLED", f"{und} live is off until {flag}=1."))
 
     if (RUNNER.mode or "").lower() == "mock":
         return finish(_place_mock(body, dry_run=dry_run, sleeve=sleeve, und=und, side=side, operator_id=operator_id, trace_id=trace_id))
@@ -326,6 +521,10 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
     book = books.book_by_underlying(book_list, und)
     if book is None:
         return finish(_reject("CONTRACT_RESOLVE_FAILED", f"unknown underlying {und}"))
+
+    from app.books.live_cutover import book_uses_dhan
+
+    use_dhan = book_uses_dhan(und, book)
 
     if books.book_is_halted(book) and not dry_run:
         return finish(
@@ -457,9 +656,11 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
             }
         )
 
-    client_oid = f"paper-{uuid4().hex[:12]}"
+    client_oid = f"desk-{uuid4().hex[:12]}"
     corr_id = dhan_correlation_id(trace_id, client_oid)
-    tag = getattr(body, "tag", None) or ("edge-desk-live" if (RUNNER.mode or "").lower() == "live" else "edge-desk-paper")
+    tag = getattr(body, "tag", None) or (
+        "edge-desk-live" if use_dhan else "edge-desk-paper"
+    )
     order_rec = {
         "client_order_id": client_oid,
         "correlation_id": corr_id,
@@ -472,7 +673,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
         "lots": lots_i,
         "lot_size": lot_size,
         "tag": tag,
-        "mode": RUNNER.mode,
+        "mode": "dhan" if use_dhan else "paper",
         "queued_at": _now(),
         "trace_id": trace_id,
         "day": day,
@@ -482,24 +683,96 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
         "order.paper_place",
         operator_id=operator_id,
         trace_id=trace_id,
+        oms="dhan" if use_dhan else "paper",
         **{k: v for k, v in order_rec.items() if k not in ("gate", "contract")},
     )
 
-    try:
-        raw = dhan.place_order(
-            security_id=contract.security_id,
-            transaction_type=side,
-            quantity=qty,
-            tag=order_rec["tag"] or "edge-desk",
-            correlation_id=corr_id,
+    # Paper OMS: simulate fill @ live LTP — no Dhan place (zero money).
+    if not use_dhan:
+        return finish(
+            _place_desk_paper(
+                body=body,
+                book=book,
+                und=und,
+                sleeve=sleeve,
+                side=side,
+                day=day,
+                contract=contract,
+                cui=cui,
+                gate=gate,
+                quote=quote,
+                live_ltp=float(live_ltp),
+                qty=qty,
+                lots_i=lots_i,
+                lot_size=lot_size,
+                order_rec=order_rec,
+                client_oid=client_oid,
+                operator_id=operator_id,
+                trace_id=trace_id,
+            )
         )
-        broker_id = None
-        raw_inner = raw.get("raw") if isinstance(raw, dict) else None
-        if isinstance(raw_inner, dict):
-            broker_id = raw_inner.get("orderId") or raw_inner.get("order_id")
-            data = raw_inner.get("data")
-            if isinstance(data, dict):
-                broker_id = broker_id or data.get("orderId")
+
+    try:
+        from app.execution.armor import place_armed_entry, place_armed_exit
+        from app.execution.config import ARMOR
+
+        _schedule_feed_subscribe(contract.security_id)
+        if ARMOR.enabled and side == "BUY":
+            stop_pct, tp_pct = books.sleeve_risk_params(book, sleeve)
+            raw = place_armed_entry(
+                underlying=und,
+                sleeve=sleeve,
+                security_id=contract.security_id,
+                symbol=contract.tradingsymbol,
+                quantity=qty,
+                side=side,
+                stop_pct=stop_pct,
+                tp_pct=tp_pct,
+                correlation_id=corr_id,
+                client_order_id=client_oid,
+                ref_px=float(live_ltp),
+                tag=order_rec["tag"] or "edge-desk",
+            )
+            if raw.get("accepted") is False:
+                code = str(raw.get("code") or "SPREAD_REFUSE")
+                return finish(
+                    _reject(
+                        code,
+                        str(raw.get("message") or code),
+                        {"contract": cui, "gate": gate, "quote": _quote_ui(quote), "armor": raw},
+                    )
+                )
+        elif ARMOR.enabled and side == "SELL":
+            raw = place_armed_exit(
+                underlying=und,
+                sleeve=sleeve,
+                security_id=contract.security_id,
+                symbol=contract.tradingsymbol,
+                quantity=qty,
+                correlation_id=corr_id,
+                client_order_id=client_oid,
+                ref_px=float(live_ltp),
+                tag=order_rec["tag"] or "edge-desk",
+            )
+            if raw.get("accepted") is False:
+                code = str(raw.get("code") or "SPREAD_REFUSE")
+                return finish(
+                    _reject(
+                        code,
+                        str(raw.get("message") or code),
+                        {"contract": cui, "gate": gate, "quote": _quote_ui(quote), "armor": raw},
+                    )
+                )
+        else:
+            raw = dhan.place_order(
+                security_id=contract.security_id,
+                transaction_type=side,
+                quantity=qty,
+                order_type="MARKET",
+                tag=order_rec["tag"] or "edge-desk",
+                correlation_id=corr_id,
+            )
+        broker_id = _extract_broker_id(raw)
         RUNNER.orders_executed += 1
         RUNNER.audit_event("order.submitted", client_order_id=client_oid, operator_id=operator_id, trace_id=trace_id)
         _persist_order({**order_rec, "state": "submitted", "broker": raw})
@@ -531,7 +804,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
                 "lots": lots_i,
                 "lot_size": lot_size,
                 "quantity": qty,
-                "price": float(live_ltp),
+                "price": float((raw.get("armor") or {}).get("limit_px") or live_ltp),
                 "status": "TRANSIT",
             },
             "contract": cui,

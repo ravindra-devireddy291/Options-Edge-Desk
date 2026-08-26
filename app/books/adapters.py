@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.session import session_day as _session_day, to_utc_z
+from app.session import market_session, session_day as _session_day, to_utc_z
 
 
 def _now() -> str:
@@ -65,6 +65,58 @@ def load_execution_state(book: BookPaths) -> Dict[str, Any]:
         return {}
 
 
+def paper_book_start() -> date:
+    """IST day paper month begins — Home equity ignores older lab shadow P&L."""
+    import os
+
+    raw = (os.environ.get("DESK_PAPER_BOOK_START") or "2026-08-17").strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return date(2026, 8, 17)
+
+
+def paper_period_realized(book: BookPaths, *, start: Optional[date] = None) -> Dict[str, Any]:
+    """Sum closed journal PnL from paper start → today (not full lab lifetime equity)."""
+    start = start or paper_book_start()
+    end = _session_day()
+    realized = 0.0
+    trade_count = 0
+    for path in sorted(book.shadow_dir.glob("shadow_*.jsonl")):
+        day_s = path.name.replace("shadow_", "").replace(".jsonl", "")
+        try:
+            day = date.fromisoformat(day_s)
+        except ValueError:
+            continue
+        if day < start or day > end:
+            continue
+        for r in _read_journal(book, day_s, strict_day=True):
+            if not _journal_row_is_trade(r):
+                continue
+            lab = r.get("lab") or {}
+            status = str(lab.get("status") or "")
+            if status.startswith("skip"):
+                continue
+            fill = r.get("broker_fill") if isinstance(r.get("broker_fill"), dict) else {}
+            bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
+            round_ = _round_from_journal(lab, fill, bo, day=day_s)
+            if round_["exit_reason"] == "open" or round_["pnl"] is None:
+                continue
+            realized += float(round_["pnl"])
+            trade_count += 1
+    return {
+        "paper_start": start.isoformat(),
+        "realized_pnl": round(realized, 2),
+        "trade_count": trade_count,
+    }
+
+
+def book_capital(book: BookPaths) -> float:
+    st = load_execution_state(book)
+    default_cap = 100_000.0 if book.name == "NIFTY" else 200_000.0
+    return float(st.get("capital") or st.get("starting_capital") or default_cap)
+
+
 def _read_journal(book: BookPaths, day: Optional[str] = None, *, strict_day: bool = False) -> List[Dict[str, Any]]:
     day = day or _session_day().isoformat()
     path = book.shadow_dir / f"shadow_{day}.jsonl"
@@ -85,6 +137,78 @@ def _read_journal(book: BookPaths, day: Optional[str] = None, *, strict_day: boo
         except json.JSONDecodeError:
             continue
     return rows
+
+
+def _as_utc_z(ts: Any, *, day: Optional[str] = None) -> str:
+    """Best-effort ISO-Z timestamp for decision-log rows (no secrets)."""
+    if isinstance(ts, str) and ts.strip():
+        s = ts.strip().replace(" ", "T")
+        if s.endswith("Z") or "+" in s[10:] or s.endswith("+00:00"):
+            return s.replace("+00:00", "Z") if s.endswith("+00:00") else s
+        if len(s) >= 19:
+            return s[:19] + "Z"
+        if len(s) == 10:
+            return s + "T00:00:00Z"
+    if day and len(str(day)) >= 10:
+        return str(day)[:10] + "T00:00:00Z"
+    return _now()
+
+
+def _reject_stage(status: str, tradeable: bool, execution: dict) -> str:
+    """gate | signal | oms — stable strings for UI decision log."""
+    if status == "ok" and not tradeable:
+        return "gate"
+    reason = str((execution or {}).get("reason") or "").lower()
+    if any(k in reason for k in ("oms", "broker", "order", "place", "reject")):
+        return "oms"
+    if (execution or {}).get("allow") is False and status == "ok":
+        return "gate"
+    return "signal"
+
+
+def _reject_reason(status: str, execution: dict) -> str:
+    """Prefer lab snake_case status codes; UI humanizes."""
+    st = (status or "").strip()
+    if st and st.lower() not in ("ok", "ok_trade", ""):
+        return st
+    ex = str((execution or {}).get("reason") or "").strip()
+    if ex and ex.lower() not in ("ok", ""):
+        return ex
+    return "skip"
+
+
+def normalize_rejected_row(
+    book: BookPaths,
+    r: Dict[str, Any],
+    *,
+    day: Optional[str] = None,
+    index: int = 0,
+) -> Dict[str, Any]:
+    """UI-safe rejected / skip row — no tokens, PIN, or broker secrets."""
+    lab = r.get("lab") if isinstance(r.get("lab"), dict) else {}
+    execution = r.get("execution") if isinstance(r.get("execution"), dict) else {}
+    sleeve = str(r.get("sleeve") or lab.get("sleeve") or "fade").lower()
+    if sleeve not in ("fade", "orb"):
+        sleeve = "fade"
+    underlying = book.name
+    status = str(lab.get("status") or "")
+    tradeable = bool(r.get("tradeable")) if "tradeable" in r else status == "ok"
+    day_s = str(lab.get("day") or day or "")
+    sym_raw = lab.get("symbol")
+    symbol = str(sym_raw).strip() if sym_raw not in (None, "") else None
+    notes = execution.get("notes") or lab.get("notes") or r.get("notes")
+    if notes is not None:
+        notes = str(notes).strip() or None
+    return {
+        "trace_id": f"{underlying}:{sleeve}:{day_s or index}",
+        "underlying": underlying,
+        "sleeve": sleeve,
+        "stage": _reject_stage(status, tradeable, execution),
+        "reason": _reject_reason(status, execution),
+        "symbol": symbol,
+        "at": _as_utc_z(r.get("ts") or lab.get("ts"), day=day_s or None),
+        "notes": notes,
+    }
 
 
 def signals_from_book(book: BookPaths, day: Optional[str] = None) -> Tuple[List[dict], List[dict], Dict[str, int]]:
@@ -158,15 +282,7 @@ def signals_from_book(book: BookPaths, day: Optional[str] = None) -> Tuple[List[
                 }
             )
         else:
-            rejected.append(
-                {
-                    "trace_id": trace,
-                    "symbol": sym,
-                    "stage": "gate" if status == "ok" and not tradeable else "signal",
-                    "reason": (r.get("execution") or {}).get("reason") or status or "skip",
-                    "underlying": underlying,
-                }
-            )
+            rejected.append(normalize_rejected_row(book, r, day=day, index=i))
     funnel = {
         "collected": len(rows),
         "after_gates": len(approved) + sum(1 for x in rejected if x["stage"] == "gate"),
@@ -251,22 +367,52 @@ def _book_label(capital: float) -> str:
     return f"Rs {int(capital)} book"
 
 
+def _round_money(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_frac(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return round(float(v), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _public_gate_row(sleeve: str, g: Dict[str, Any]) -> Dict[str, Any]:
+    """UI-facing sleeve gate: allow/lots/reason + GateDecision headroom fields."""
+    reason = g.get("reason")
+    if reason in ("", "ok", "OK"):
+        reason = None
+    allow = bool(g.get("allow"))
+    return {
+        "sleeve": sleeve,
+        "allow": allow,
+        "lots": int(g.get("lots") or 0),
+        "reason": None if allow else reason,
+        "dd_mode": g.get("dd_mode"),
+        "dd_pct": _round_frac(g.get("dd_pct")),
+        "day_pnl": _round_money(g.get("day_pnl")),
+        "month_pnl": _round_money(g.get("month_pnl")),
+        "daily_cap": _round_money(g.get("daily_cap")),
+        "monthly_cap": _round_money(g.get("monthly_cap")),
+        "premium_budget": _round_money(g.get("premium_budget")),
+        "deploy_frac": _round_frac(g.get("deploy_frac")),
+    }
+
+
 def sleeve_gates(book: BookPaths, day: Optional[date] = None) -> List[Dict[str, Any]]:
     day = day or _session_day()
     out: List[Dict[str, Any]] = []
     for sleeve in ("fade", "orb"):
         g = check_book_gate(book, sleeve=sleeve, day=day)
-        reason = g.get("reason")
-        if reason in ("", "ok", "OK"):
-            reason = None
-        out.append(
-            {
-                "sleeve": sleeve,
-                "allow": bool(g.get("allow")),
-                "lots": int(g.get("lots") or 0),
-                "reason": None if g.get("allow") else reason,
-            }
-        )
+        out.append(_public_gate_row(sleeve, g))
     return out
 
 
@@ -275,6 +421,7 @@ def books_snapshot(
     *,
     position_rows: Optional[List[dict]] = None,
 ) -> List[Dict[str, Any]]:
+    """Home book cards: capital + paper-period realized + open MTM (not lifetime lab equity)."""
     by_und: Dict[str, List[dict]] = {"NIFTY": [], "BANKNIFTY": []}
     for row in position_rows or []:
         u = str(row.get("underlying") or "")
@@ -282,13 +429,12 @@ def books_snapshot(
             by_und[u].append(row)
     out: List[Dict[str, Any]] = []
     for b in books:
-        st = load_execution_state(b)
-        default_cap = 100_000.0 if b.name == "NIFTY" else 200_000.0
-        capital = float(st.get("capital") or st.get("starting_capital") or default_cap)
-        equity = float(st.get("equity") or capital)
+        capital = book_capital(b)
+        period = paper_period_realized(b)
         rows = by_und.get(b.name) or []
         open_mtm = round(sum(float(r.get("unrealized_pnl") or 0) for r in rows), 2)
         open_lots = int(sum(int(r.get("lots") or 0) for r in rows))
+        equity = round(capital + float(period["realized_pnl"]) + open_mtm, 2)
         out.append(
             {
                 "underlying": b.name,
@@ -299,40 +445,90 @@ def books_snapshot(
                 "open_lots": open_lots,
                 "halted": book_is_halted(b),
                 "gates": sleeve_gates(b),
+                "paper_start": period["paper_start"],
+                "paper_realized": period["realized_pnl"],
+                "paper_trade_count": period["trade_count"],
             }
         )
     return out
 
 
+def _circuit_limits(book: BookPaths) -> Dict[str, Any]:
+    """Daily loss / max DD limits from lab book config (same brakes as gates)."""
+    daily: Optional[float] = None
+    max_dd = 0.20
+    try:
+        ensure_lab_on_path(book.lab_root)
+        from edge_lab.risk.execution_brakes import load_book_config  # type: ignore
+
+        cfg = load_book_config(book.config_path)
+        max_dd = float(getattr(cfg, "max_dd_pct", None) or 0.20)
+        st = load_execution_state(book)
+        eq = float(st.get("equity") or 0) or None
+        if hasattr(cfg, "daily_cap_for"):
+            daily = cfg.daily_cap_for(eq)
+        elif hasattr(cfg, "daily_cap"):
+            daily = cfg.daily_cap
+    except Exception:
+        pass
+    return {
+        "daily_loss_limit_inr": _round_money(daily),
+        "max_drawdown_from_peak_pct": _round_frac(max_dd) if max_dd is not None else 0.20,
+    }
+
+
+def _book_dd_pct(st: Dict[str, Any]) -> float:
+    eq = float(st.get("equity") or 0)
+    peak = float(st.get("peak_equity") or eq or 1)
+    if peak <= 0:
+        return 0.0
+    return max(0.0, (peak - eq) / peak)
+
+
 def circuit_from_books(books: List[BookPaths]) -> Dict[str, Any]:
+    """Home Risk circuit read model — GET only; reuses execution_state / lab brakes."""
     tripped = False
     soft = False
-    reason = ""
+    reason: Optional[str] = None
     max_dd = 0.0
+    book_rows: List[Dict[str, Any]] = []
     for b in books:
         st = load_execution_state(b)
-        eq = float(st.get("equity") or 0)
-        peak = float(st.get("peak_equity") or eq or 1)
-        dd = max(0.0, (peak - eq) / peak) if peak > 0 else 0.0
+        dd = _book_dd_pct(st)
         max_dd = max(max_dd, dd)
-        if str(st.get("dd_mode") or "") == "halted":
+        dd_mode = str(st.get("dd_mode") or "live")
+        month_soft = bool(st.get("month_halted") or st.get("month_ce_halt"))
+        day_soft = bool(st.get("day_daily_halt"))
+        if dd_mode == "halted":
             tripped = True
             reason = f"{b.name} peak-DD halt"
-        if st.get("month_halted") or st.get("month_ce_halt"):
+        if month_soft or day_soft:
             soft = True
             if not reason:
-                reason = f"{b.name} month halt"
+                reason = f"{b.name} month halt" if month_soft else f"{b.name} daily halt"
+        book_rows.append(
+            {
+                "underlying": b.name,
+                "dd_pct": _round_frac(dd),
+                "dd_mode": dd_mode,
+                "day_pnl": _round_money(st.get("day_pnl")),
+                "month_pnl": _round_money(st.get("month_pnl")),
+            }
+        )
+    limits = (
+        _circuit_limits(books[0])
+        if books
+        else {"daily_loss_limit_inr": None, "max_drawdown_from_peak_pct": 0.20}
+    )
     return {
         "tripped": tripped,
         "soft_halt": soft,
         "trip_reason": reason,
-        "limits": {
-            "daily_loss_limit_inr": 0,
-            "max_drawdown_from_peak_pct": 0.20,
-        },
+        "peak_dd_pct": _round_frac(max_dd),
+        "limits": limits,
+        "books": book_rows,
         "portfolio_unrealized_pnl": None,
         "mtm_stale": None,
-        "peak_dd_pct": round(100.0 * max_dd, 2),
     }
 
 
@@ -368,18 +564,139 @@ def _time_ist(row: Dict[str, Any]) -> str:
 
 
 def _journal_row_is_trade(r: Dict[str, Any]) -> bool:
-    """True only for broker fills/orders or tradeable lab ok rows — not skip cards."""
-    lab = r.get("lab") or {}
+    """True only for desk/broker rounds — not lab-only shadow cards (those stay on compass)."""
     fill = r.get("broker_fill") if isinstance(r.get("broker_fill"), dict) else {}
     bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
-    if bo or fill:
-        return True
-    status_lab = str(lab.get("status") or "")
-    tradeable = bool(r.get("tradeable")) if "tradeable" in r else status_lab == "ok"
-    if not tradeable or status_lab != "ok":
+    return bool(bo or fill)
+
+
+def _lab_eod_still_provisional(exit_reason: str, day: Optional[str]) -> bool:
+    """
+    Intraday shadow re-runs write exit_reason=eod + last-bar mark before the
+    session is actually flat. Treat that as open until NSE close on that day.
+    """
+    reason = str(exit_reason or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if reason not in ("eod", "eod_flatten"):
         return False
-    entry = _num(lab.get("entry"))
-    return entry is not None and entry > 0
+    today = _session_day()
+    try:
+        d = date.fromisoformat(day) if day else today
+    except ValueError:
+        d = today
+    if d != today:
+        return False
+    return market_session() != "closed"
+
+
+def _open_round(
+    *,
+    entry: Optional[float],
+    lab_entry: Optional[float],
+    lab_exit: Optional[float],
+    broker_entry: Optional[float],
+    costs: float,
+) -> Dict[str, Any]:
+    return {
+        "entry": entry,
+        "exit_px": None,
+        "exit_reason": "open",
+        "pnl": None,
+        "net": None,
+        "costs": costs,
+        "lab_entry": lab_entry,
+        "lab_exit": lab_exit,
+        "broker_entry": broker_entry if broker_entry is not None else entry,
+        "broker_exit": None,
+        "slip_entry": None,
+        "slip_exit": None,
+    }
+
+
+def _round_from_journal(
+    lab: Dict[str, Any],
+    fill: Dict[str, Any],
+    bo: Dict[str, Any],
+    *,
+    day: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve entry/exit/PnL for blotter.
+
+    Lab cards carry a *planned* exit (often eod) before the broker closes.
+    Once a desk order/fill exists, stay OPEN until broker_fill.exit is set —
+    otherwise open paper looks closed and lab MTM keeps rewriting the row.
+    Lab-only eod on the live session day stays OPEN until market close.
+    """
+    broker_entry = _num(fill.get("entry"))
+    broker_exit = _num(fill.get("exit"))
+    lab_entry = _num(lab.get("entry"))
+    lab_exit = _num(lab.get("exit"))
+    entry = broker_entry if broker_entry is not None else lab_entry
+    has_broker = bool(bo) or bool(fill)
+    costs_open = _num(fill.get("costs")) or _num(lab.get("costs")) or 0.0
+
+    if has_broker and broker_exit is None:
+        return _open_round(
+            entry=entry,
+            lab_entry=lab_entry,
+            lab_exit=lab_exit,
+            broker_entry=broker_entry,
+            costs=costs_open,
+        )
+
+    if has_broker:
+        exit_px = broker_exit
+        exit_reason = str(fill.get("exit_reason") or lab.get("exit_reason") or "exit")
+        pnl = _num(fill.get("net_pnl"))
+        costs = costs_open
+        net = pnl if pnl is not None else None
+    else:
+        exit_px = lab_exit
+        exit_reason = str(lab.get("exit_reason") or "")
+        pnl = _num(lab.get("net_pnl"))
+        costs = _num(lab.get("costs")) or 0.0
+        if not exit_reason:
+            exit_reason = "open" if exit_px is None else "exit"
+        if exit_px is None and exit_reason in ("", "open"):
+            exit_reason = "open"
+        if _lab_eod_still_provisional(exit_reason, day):
+            return _open_round(
+                entry=entry,
+                lab_entry=lab_entry,
+                lab_exit=lab_exit,
+                broker_entry=broker_entry,
+                costs=costs,
+            )
+        net = round(pnl - costs, 2) if pnl is not None else None
+
+    if exit_reason == "open":
+        exit_px = None
+        pnl = None
+        net = None
+
+    slip_entry = None
+    slip_exit = None
+    broker_entry_disp = broker_entry if broker_entry is not None else entry
+    broker_exit_disp = broker_exit if broker_exit is not None else (None if has_broker else exit_px)
+    if lab_entry is not None and broker_entry_disp is not None:
+        slip_entry = round(float(broker_entry_disp) - float(lab_entry), 4)
+    if lab_exit is not None and broker_exit_disp is not None:
+        slip_exit = round(float(broker_exit_disp) - float(lab_exit), 4)
+
+    return {
+        "entry": entry,
+        "exit_px": exit_px,
+        "exit_reason": exit_reason,
+        "pnl": pnl,
+        "net": net,
+        "costs": costs,
+        "lab_entry": lab_entry,
+        "lab_exit": lab_exit,
+        "broker_entry": broker_entry_disp,
+        "broker_exit": broker_exit_disp,
+        "slip_entry": slip_entry,
+        "slip_exit": slip_exit,
+    }
 
 
 def trades_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str, Any]:
@@ -393,23 +710,16 @@ def trades_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str,
             lab = r.get("lab") or {}
             fill = r.get("broker_fill") if isinstance(r.get("broker_fill"), dict) else {}
             bo = r.get("broker_order") if isinstance(r.get("broker_order"), dict) else {}
-            entry = _num(fill.get("entry") if fill else None) or _num(lab.get("entry"))
-            exit_px = _num(fill.get("exit") if fill else None) or _num(lab.get("exit"))
-            pnl = _num((fill or {}).get("net_pnl"))
-            if pnl is None:
-                pnl = _num(lab.get("net_pnl"))
-            costs = _num((fill or {}).get("costs")) or _num(lab.get("costs")) or 0.0
-            net = _num((fill or {}).get("net_pnl"))
-            if net is None:
-                net = (round(pnl - costs, 2) if pnl is not None else None)
-            exit_reason = str(lab.get("exit_reason") or (fill or {}).get("exit_reason") or "")
+            round_ = _round_from_journal(lab, fill, bo, day=day)
+            entry = round_["entry"]
+            exit_px = round_["exit_px"]
+            exit_reason = round_["exit_reason"]
+            pnl = round_["pnl"]
+            net = round_["net"]
+            costs = round_["costs"]
             has_order = bool(bo) or bool(fill) or entry is not None
             if not has_order and not exit_reason:
                 continue
-            if not exit_reason:
-                exit_reason = "take_profit" if (fill or {}).get("notes") else ("open" if exit_px is None else "exit")
-            if exit_px is None and exit_reason in ("", "open"):
-                exit_reason = "open"
             qty = int((fill or {}).get("qty") or lab.get("qty") or bo.get("quantity") or 0)
             lots = int(bo.get("lots") or (r.get("execution") or {}).get("lots") or lab.get("lots") or 0)
             lot_size = int(lab.get("lot_size") or bo.get("lot_size") or 0) or 0
@@ -425,18 +735,6 @@ def trades_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str,
             closed_at = (fill or {}).get("recorded_at") or r.get("ts") or None
             if exit_reason == "open":
                 closed_at = None
-                pnl = None
-                net = None
-            lab_entry = _num(lab.get("entry"))
-            lab_exit = _num(lab.get("exit"))
-            broker_entry = _num((fill or {}).get("entry")) or entry
-            broker_exit = _num((fill or {}).get("exit")) or exit_px
-            slip_entry = None
-            slip_exit = None
-            if lab_entry is not None and broker_entry is not None:
-                slip_entry = round(broker_entry - lab_entry, 4)
-            if lab_exit is not None and broker_exit is not None:
-                slip_exit = round(broker_exit - lab_exit, 4)
             closed_iso = closed_at
             if closed_at and "Z" not in str(closed_at) and "T" in str(closed_at):
                 try:
@@ -466,12 +764,12 @@ def trades_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str,
                     "realized_pnl": pnl,
                     "costs": costs,
                     "net_pnl": net,
-                    "lab_entry": lab_entry,
-                    "broker_entry": broker_entry,
-                    "lab_exit": lab_exit,
-                    "broker_exit": broker_exit,
-                    "slip_entry": slip_entry,
-                    "slip_exit": slip_exit,
+                    "lab_entry": round_["lab_entry"],
+                    "broker_entry": round_["broker_entry"],
+                    "lab_exit": round_["lab_exit"],
+                    "broker_exit": round_["broker_exit"],
+                    "slip_entry": round_.get("slip_entry"),
+                    "slip_exit": round_.get("slip_exit"),
                     "closed_at": closed_iso,
                 }
             )
@@ -532,6 +830,7 @@ def signals_today(books: List[BookPaths], day: Optional[str] = None) -> Dict[str
             signals.append(
                 {
                     "signal_id": f"{b.name.lower()}-{sleeve}-{day}-{idx}",
+                    "day": day,
                     "time": _time_ist(r),
                     "underlying": b.name,
                     "sleeve": sleeve,
@@ -617,3 +916,19 @@ def check_book_gate(
         return payload
     except Exception as exc:  # noqa: BLE001
         return {"allow": False, "reason": f"gate_error:{exc}", "lots": 0}
+
+
+def sleeve_risk_params(book: BookPaths, sleeve: str) -> tuple[float, float]:
+    """Stop / TP fractions from lab YAML (fade or orb)."""
+    ensure_lab_on_path(book.lab_root)
+    try:
+        from edge_lab.risk.execution_brakes import load_book_config  # type: ignore
+
+        cfg = load_book_config(book.config_path)
+        if sleeve.lower() == "orb":
+            o = cfg.orb or {}
+            return float(o.get("stop_pct") or 0.25), float(o.get("take_profit_pct") or 0.80)
+        f = cfg.fade or {}
+        return float(f.get("stop_pct") or 0.30), float(f.get("take_profit_pct") or 0.50)
+    except Exception:
+        return 0.30, 0.50

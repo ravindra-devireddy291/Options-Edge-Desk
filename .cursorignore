@@ -1,0 +1,46 @@
+# Global-style ignore (copy into each project .cursorignore)
+# Node / frontend
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.min.js
+*.map
+.turbo/
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Data / reports (huge — never index by default)
+data_lake/
+**/data_lake/
+reports/**/*.parquet
+reports/**/*.csv
+**/*.parquet
+**/*.duckdb
+**/*.sqlite
+**/terminals/
+agent-transcripts/
+
+# VCS / logs / secrets
+.git/
+*.log
+*.pem
+*.key
+credentials.json
+**/secrets/
+
+# Graphify rebuild artifacts can stay readable but skip heavy viz caches if huge
+graphify-out/cache/

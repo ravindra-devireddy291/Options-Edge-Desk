@@ -31,7 +31,7 @@ def option_mark(ev: Dict[str, Any], now: datetime) -> float:
 def index_spot(evs: list, underlying: str, now: datetime, fallback: float) -> Dict[str, Optional[float]]:
     rows = [e for e in evs if e.get("underlying") == underlying]
     if not rows:
-        return {"ltp": fallback, "change_pct": 0.0}
+        return {"ltp": fallback, "change_pct": 0.0, "change_pts": 0.0}
     # Dummy path around first strike so Home tape is never null.
     first = rows[0]
     strike = float(first.get("strike") or fallback)
@@ -47,4 +47,5 @@ def index_spot(evs: list, underlying: str, now: datetime, fallback: float) -> Di
     else:
         ltp = lerp(open_px, close_px, progress(now, t0, t1))
     chg = 0.0 if open_px == 0 else 100.0 * (ltp - open_px) / open_px
-    return {"ltp": round(ltp, 2), "change_pct": round(chg, 4)}
+    pts = round(ltp - open_px, 2)
+    return {"ltp": round(ltp, 2), "change_pct": round(chg, 4), "change_pts": pts}

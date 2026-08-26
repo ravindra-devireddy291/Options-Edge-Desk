@@ -52,6 +52,9 @@ class WsHub:
     def unregister(self, websocket: WebSocket) -> None:
         self._clients.discard(websocket)
 
+    def has_clients(self) -> bool:
+        return bool(self._clients)
+
     def broadcast(self, event_type: str, data: Any, *, bump: Optional[bool] = None) -> Optional[int]:
         """Queue a WS frame to all clients. Safe from sync OMS / mock threads."""
         do_bump = bump if bump is not None else event_type in _BOOK_EVENTS

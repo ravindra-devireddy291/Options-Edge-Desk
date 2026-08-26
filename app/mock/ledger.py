@@ -491,7 +491,11 @@ class MockLedger:
         }
 
     def signals_today(self) -> Dict[str, Any]:
-        sigs = [dict(s) for s in self.signals]
+        sigs = []
+        for s in self.signals:
+            row = dict(s)
+            row.setdefault("day", self.day)
+            sigs.append(row)
         return {"day": self.day, "signals": sigs, "count": len(sigs)}
 
     def unrealized_sum(self) -> float:

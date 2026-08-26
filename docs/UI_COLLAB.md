@@ -50,18 +50,28 @@ JSON paths are relative to `{DESK_API_URL}/api/v1/desk` except `/healthz` and `/
 | 16 | GET | `/gates?underlying=` | Ticket / Order banner | key |
 | 17 | GET | `/triggers/active` | Center interrupt | key |
 | 18 | POST | `/triggers/ack` | Dismiss interrupt | key |
-| 19 | WS | `/ws/desk` | `health.tick` + trigger | query key |
+| 19 | WS | `/ws/desk` | `mark.batch` + `health.tick` + trigger | query key |
 
-**Do not call from the trader UI:** `/health/full`, `/runner` GET, `/cycle/tick`, `/orders/queue`, `/signals/last-cycle`, `/signals/rejected`, `/safety/*`, `/system/token*`, `/audit/*`.
+**Do not call from the trader UI:** `/health/full`, `/runner` GET, `/cycle/tick`, `/orders/queue`, `/safety/kill-switch` POST, `/system/token*`.
+
+**Allowlisted for decision log:** `GET /signals/rejected`, `GET /signals/last-cycle` (see `UI_API_CONTRACT` §14b/§14c). Compass stays on `/signals/today`.
+
+**Allowlisted for Home Risk:** `GET /safety/circuit-breaker` (read-only). Never kill POST.
+
+**Allowlisted for activity panel:** `GET /audit/tail` (redacted).
+
+**Allowlisted for Lab impress:** `GET /research/oos`, `/research/cost-honesty`, `/research/scale`, `/research/brief` (+ existing `/research/stable*`, `/research/g5`).
+
+Live ticks: [`UI_HANDSHAKE_LIVE_TICK.md`](./UI_HANDSHAKE_LIVE_TICK.md). While EventSource is up, do **not** snapshot every 1–5 s.
 
 ### Polling if WS unused
 
 | Resource | When |
 |----------|------|
-| `/status` | 5–15 s signed in (mock playing: ~1 s) |
+| `/snapshot` | Boot; 30–60 s if wire up; ~3 s if wire down and trading |
 | `/quotes/option` | 1 s while ticket open |
 | `/triggers/active` | 2–5 s if WS down |
-| Book / Day | Tab focus + after place / cancel / sync / ack |
+| Book / Day | Included in snapshot / WS deltas |
 | Lab | Tab focus |
 | `/contracts` | Ticket open / underlying change — **do not hardcode expiry** |
 

@@ -95,11 +95,21 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 | 5 | `GET` | `/api/v1/desk/orders/open` | Book | key |
 | 6 | `POST` | `/api/v1/desk/orders/paper` | Ticket + Order | key |
 | 7 | `POST` | `/api/v1/desk/orders/cancel` | Book | key |
-| 8 | `GET` | `/api/v1/desk/trades/today` | Day | key |
+| 8 | `GET` | `/api/v1/desk/trades/today` | Day blotter (optional `?day=`) | key |
+| 8b | `GET` | `/api/v1/desk/trades/history?from=&to=` | Paper-month / range blotter | key |
 | 9 | `GET` | `/api/v1/desk/signals/today` | Day compass | key |
+| 9b | `GET` | `/api/v1/desk/signals/rejected` | Decision log (skips / denies) | key |
+| 9c | `GET` | `/api/v1/desk/signals/last-cycle` | Decision log + funnel | key |
 | 10 | `POST` | `/api/v1/desk/sync` | Home broker banner | key |
 | 11 | `GET` | `/api/v1/desk/research/stable` | Lab | key |
 | 12 | `GET` | `/api/v1/desk/research/stable/{underlying}` | Lab | key |
+| 12b | `GET` | `/api/v1/desk/research/g5` | Home G5 readiness (not fills today) | key |
+| 12b2 | `GET` | `/api/v1/desk/research/oos` | Lab Trust (train / OOS) | key |
+| 12b3 | `GET` | `/api/v1/desk/research/cost-honesty` | Lab cost honesty | key |
+| 12b4 | `GET` | `/api/v1/desk/research/scale` | Lab capital scale | key |
+| 12b5 | `GET` | `/api/v1/desk/research/brief` | Pre-market trade card | key |
+| 12c | `GET` | `/api/v1/desk/safety/circuit-breaker` | Home Risk (pre-halt) | key |
+| 12d | `GET` | `/api/v1/desk/audit/tail` | What-happened panel | key |
 | 13 | `GET` | `/api/v1/desk/contracts` | Order + ticket | key |
 | 14 | `GET` | `/api/v1/desk/quotes/option` | Ticket live price | key |
 | 15 | `GET` | `/api/v1/desk/quotes/spot` | Tape (optional) | key |
@@ -112,7 +122,7 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 
 | Resource | Interval |
 |----------|----------|
-| `GET /snapshot` (preferred) or `GET /status` | Boot once; reconcile **15–20 s** with WS up, **~3 s** if WS down while armed |
+| `GET /snapshot` (preferred) or `GET /status` | Boot once; reconcile **30–60 s** with WS up + `mark.batch`, **~3 s** if WS down while armed |
 | `GET /quotes/option` | 1 s while ticket open |
 | Book / Day lists | Included in `/snapshot` — do not fan-out from the browser |
 | Lab | On tab focus |
@@ -189,8 +199,34 @@ Home snapshot. Poll this.
       "open_lots": 10,
       "halted": false,
       "gates": [
-        { "sleeve": "fade", "allow": true, "lots": 10, "reason": null },
-        { "sleeve": "orb", "allow": false, "lots": 0, "reason": "ORB is denied after a fade loss" }
+        {
+          "sleeve": "fade",
+          "allow": true,
+          "lots": 10,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.018,
+          "day_pnl": -120.5,
+          "month_pnl": 4200.0,
+          "daily_cap": 2000.0,
+          "monthly_cap": 15000.0,
+          "premium_budget": 25000.0,
+          "deploy_frac": 0.25
+        },
+        {
+          "sleeve": "orb",
+          "allow": false,
+          "lots": 0,
+          "reason": "ORB is denied after a fade loss",
+          "dd_mode": "live",
+          "dd_pct": 0.018,
+          "day_pnl": -120.5,
+          "month_pnl": 4200.0,
+          "daily_cap": 2000.0,
+          "monthly_cap": 15000.0,
+          "premium_budget": 25000.0,
+          "deploy_frac": 0.25
+        }
       ]
     },
     {
@@ -202,8 +238,34 @@ Home snapshot. Poll this.
       "open_lots": 2,
       "halted": false,
       "gates": [
-        { "sleeve": "fade", "allow": true, "lots": 4, "reason": null },
-        { "sleeve": "orb", "allow": true, "lots": 2, "reason": null }
+        {
+          "sleeve": "fade",
+          "allow": true,
+          "lots": 4,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.01,
+          "day_pnl": 0.0,
+          "month_pnl": 800.0,
+          "daily_cap": 4000.0,
+          "monthly_cap": 30000.0,
+          "premium_budget": 50000.0,
+          "deploy_frac": 0.25
+        },
+        {
+          "sleeve": "orb",
+          "allow": true,
+          "lots": 2,
+          "reason": null,
+          "dd_mode": "live",
+          "dd_pct": 0.01,
+          "day_pnl": 0.0,
+          "month_pnl": 800.0,
+          "daily_cap": 4000.0,
+          "monthly_cap": 30000.0,
+          "premium_budget": 50000.0,
+          "deploy_frac": 0.25
+        }
       ]
     }
   ]
@@ -518,11 +580,52 @@ Example: `GET /api/v1/desk/gates?underlying=NIFTY`
   "underlying": "NIFTY",
   "lot_size": 65,
   "sleeves": [
-    { "sleeve": "fade", "allow": true, "lots": 10, "reason": null },
-    { "sleeve": "orb", "allow": false, "lots": 0, "reason": "ORB is denied after a fade loss" }
+    {
+      "sleeve": "fade",
+      "allow": true,
+      "lots": 10,
+      "reason": null,
+      "dd_mode": "live",
+      "dd_pct": 0.018,
+      "day_pnl": -120.5,
+      "month_pnl": 4200.0,
+      "daily_cap": 2000.0,
+      "monthly_cap": 15000.0,
+      "premium_budget": 25000.0,
+      "deploy_frac": 0.25
+    },
+    {
+      "sleeve": "orb",
+      "allow": false,
+      "lots": 0,
+      "reason": "ORB is denied after a fade loss",
+      "dd_mode": "live",
+      "dd_pct": 0.018,
+      "day_pnl": -120.5,
+      "month_pnl": 4200.0,
+      "daily_cap": 2000.0,
+      "monthly_cap": 15000.0,
+      "premium_budget": 25000.0,
+      "deploy_frac": 0.25
+    }
   ]
 }
 ```
+
+| Field | Type | Notes |
+|-------|------|--------|
+| `sleeve` | `fade` \| `orb` | |
+| `allow` | bool | Place enabled for that sleeve |
+| `lots` | number | Max lots when allow |
+| `reason` | string \| null | `null` when `allow`; humanized ORB message when denied after fade loss |
+| `dd_mode` | string \| null | From lab `GateDecision` (e.g. `live`, `halted`) |
+| `dd_pct` | number \| null | Fraction, ≤4 dp (e.g. `0.018` = 1.8% DD) |
+| `day_pnl` / `month_pnl` | number \| null | Money, 2 dp |
+| `daily_cap` / `monthly_cap` | number \| null | Money; stay `null` if lab returns null — do not invent |
+| `premium_budget` | number \| null | Money, 2 dp |
+| `deploy_frac` | number \| null | Fraction, ≤4 dp |
+
+Same sleeve object shape on `GET /status` → `books[].gates[]`. Brake logic unchanged; this is pass-through only.
 
 Order copy: “NIFTY fade ALLOW 10 lots” / “ORB denied today. Lot size 65.”  
 Ticket: `Gate ALLOW · max 10 lots · est. costs Rs …` (costs from dry_run).
@@ -736,6 +839,8 @@ IST calendar day. Includes open rounds (`exit_reason: "open"`).
 
 Optional `?day=YYYY-MM-DD` (same path; default is today). If lab journals are empty, the desk returns the VPS snapshot `data/paper/{day}.json`. Mock without `day` still returns the sim blotter.
 
+**Multi-day history:** `GET /api/v1/desk/trades/history?from=2026-08-17&to=2026-08-25` — same trade row shape, concatenated. Home book equity uses `DESK_PAPER_BOOK_START` (default `2026-08-17`): `equity = capital + paper_realized + open_mtm`, not lifetime lab shadow equity.
+
 **`data`:**
 
 ```json
@@ -815,6 +920,62 @@ Today’s engine cards only. No last-cycle fallback. **PENDING is not an auto-or
 PENDING also appears on `GET /triggers/active` until acked, placed, or invalidated.
 
 Empty: “No signals yet. PENDING can open a ticket when trading is armed.”
+
+---
+
+## 14b. `GET /api/v1/desk/signals/rejected` (UI decision log)
+
+**Allowlisted for trader UI.** Skips and gate denies from shadow journals. UI humanizes `reason`; desk keeps lab snake_case codes.
+
+**`data`:**
+
+```json
+{
+  "count": 2,
+  "snapshot_at": "2026-08-26T15:30:00Z",
+  "rows": [
+    {
+      "trace_id": "NIFTY:orb:2026-08-26",
+      "underlying": "NIFTY",
+      "sleeve": "orb",
+      "stage": "signal",
+      "reason": "skip_lots_zero",
+      "symbol": null,
+      "at": "2026-08-26T15:27:39Z",
+      "notes": null
+    },
+    {
+      "trace_id": "NIFTY:fade:2026-08-25",
+      "underlying": "NIFTY",
+      "sleeve": "fade",
+      "stage": "gate",
+      "reason": "daily_cap",
+      "symbol": "NIFTY-X",
+      "at": "2026-08-25T04:00:00Z",
+      "notes": "cap hit"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|--------|
+| `stage` | `signal` \| `gate` \| `oms` | Where it stopped |
+| `reason` | string | Lab status preferred (`skip_*`); else execution reason |
+| `symbol` | string \| null | Real symbol only — no invented stubs |
+| `notes` | string \| null | Optional; never tokens/PIN |
+
+Does **not** replace `/signals/today` (compass). No PII / API keys.
+
+---
+
+## 14c. `GET /api/v1/desk/signals/last-cycle` (UI decision log)
+
+**Allowlisted for trader UI.** Funnel + approved + rejected for the journal snapshot.
+
+`rejected[]` uses the **same row shape** as `/signals/rejected`. Prefer `/signals/rejected` when the UI only needs the decision log.
+
+**`data`:** `{ cycle_number, success, reason, funnel, approved, rejected, snapshot_at }`
 
 ---
 
@@ -902,6 +1063,238 @@ Server **never** places from a trigger.
 
 ---
 
+## 16b. `GET /api/v1/desk/research/g5`
+
+Gate-5 **live-unlock readiness** from each lab’s `reports/shadow/G5_TRACKER.json`.  
+**Not** “fills today.” Do not invent progress from `trades_today`.
+
+**Query:** `underlying=NIFTY|BANKNIFTY` optional (omit = both books).
+
+**Read-only.** Missing / unreadable tracker → book row still present + message in `errors[]`; envelope stays `ok: true` (no HTTP 500).
+
+**`data`:**
+
+```json
+{
+  "updated": "2026-08-26T15:27:39",
+  "books": [
+    {
+      "underlying": "NIFTY",
+      "config": "paper_2l_nifty_tier2_recommended",
+      "updated": "2026-08-26T15:27:39",
+      "gate_G5": {
+        "target_sessions_with_broker_fill": 20,
+        "sessions_logged": 22,
+        "sessions_with_ok_lab_trade": 5,
+        "sessions_with_g5_fill": 0,
+        "sessions_with_virtual_paper_fill": 0,
+        "sessions_with_broker_fill": 0,
+        "pass": false,
+        "remaining": 20,
+        "note": "G5 counts paper/live/dhan_tradebook only — virtual_paper is study-only"
+      },
+      "lab_coverage": { "n_days": 22, "ok_trade_days": 5, "lab_net_sum": 51605.74 },
+      "slippage_vs_lab": {},
+      "sessions": []
+    }
+  ],
+  "errors": []
+}
+```
+
+| Field | Notes |
+|-------|--------|
+| `gate_G5.sessions_with_g5_fill` / `remaining` / `pass` | Meter numerator / left / unlock |
+| `sessions` | Cap **last 40** days; if truncated, `sessions_truncated: true` + `sessions_cap: 40` |
+| `errors[]` | e.g. `NIFTY:G5_TRACKER.json missing` — soft fail |
+
+Desk does **not** write the tracker. Separate from `status.live_cutover` (OMS path); UI should prefer this endpoint for the readiness meter.
+
+---
+
+## 16b2. `GET /api/v1/desk/research/oos` (Lab Trust)
+
+Walk-forward / half-span confirmation. **Read-only.** UI never parses lab experiment schemas.
+
+**Query:** `underlying=NIFTY|BANKNIFTY` optional (omit = both books under `books[]`).
+
+**Single-underlying `data`:**
+
+```json
+{
+  "underlying": "NIFTY",
+  "selection_rule": "locked Gate-5 T2 recommended — train vs OOS walk-forward",
+  "model_id": "anchor_tier2_recommended",
+  "windows": [
+    {
+      "id": "train",
+      "label": "Train",
+      "span": "2021-07→2024-12",
+      "return_pct": 139.73,
+      "peak_dd_pct": 23.27,
+      "verdict": "pass"
+    },
+    {
+      "id": "oos",
+      "label": "Out of sample",
+      "span": "2025-01→2026-06",
+      "return_pct": 114.81,
+      "peak_dd_pct": 37.68,
+      "verdict": "pass"
+    }
+  ],
+  "source_path": "reports/experiments/nifty_shortlist_oos_confirm.json",
+  "errors": []
+}
+```
+
+| Book | Source file | Windows |
+|------|-------------|---------|
+| NIFTY | `nifty_shortlist_oos_confirm.json` | `train` / `oos` (/ `full` if present) for `T2_Gate5` |
+| BANKNIFTY | `bn_survivors_halfspan.json` | baseline half-spans mapped to `train` (2021 H2) + `oos` (2024) |
+
+`return_pct` / `peak_dd_pct` are **percent points** (same as `/research/stable`). Missing file → soft `errors[]`, empty `windows`.
+
+---
+
+## 16b3. `GET /api/v1/desk/research/cost-honesty`
+
+Pre-aggregated BN cost-drag summary. **Never** returns the raw trades CSV.
+
+**Query:** `underlying` optional (default BANKNIFTY). NIFTY → `available: false` soft empty.
+
+**`data` (BANKNIFTY):** `{ underlying, available, variant, summary, months[], months_truncated?, source_path, errors[] }`
+
+`summary`: `n_months`, `n_trades`, `net_pnl`, `explained_drag`, `fo_cost`, `est_spread`, `avg_explained_drag_per_trade`, `method`.  
+`months`: last **24** month rows only.
+
+---
+
+## 16b4. `GET /api/v1/desk/research/scale`
+
+Capital-scale AUM table from `reports/clean_25pct_gap300_scale.json`. No `trades[]`.
+
+**`data`:** `{ underlying, available, span, recipe, rows: [{ id, aum, deploy_pct, premium_budget, return_pct, peak_dd_pct, net_pnl, n_trades, green_pct }], source_path, errors[] }`
+
+NIFTY soft-empty (`available: false`).
+
+---
+
+## 16b5. `GET /api/v1/desk/research/brief`
+
+Pre-market `TRADE_CARD_<day>.md` per lab shadow dir.
+
+**Query:** `day=YYYY-MM-DD` optional (default today IST).
+
+```json
+{
+  "day": "2026-08-26",
+  "books": [
+    { "underlying": "NIFTY", "exists": true, "markdown": "# Shadow trade card…", "path": "reports/shadow/TRADE_CARD_2026-08-26.md" },
+    { "underlying": "BANKNIFTY", "exists": false, "markdown": null, "path": "reports/shadow/TRADE_CARD_2026-08-26.md" }
+  ],
+  "errors": ["BANKNIFTY:TRADE_CARD missing"]
+}
+```
+
+UI should sanitize markdown before render.
+
+---
+
+## 16c. `GET /api/v1/desk/safety/circuit-breaker` (Home Risk)
+
+**Allowlisted GET only.** Pre-halt / DD visibility for Home Risk. Reuses lab `execution_state` + book config — not a second brake system.
+
+**Never call `POST /safety/kill-switch` from the trader UI.**
+
+**`data`:**
+
+```json
+{
+  "tripped": false,
+  "soft_halt": false,
+  "trip_reason": null,
+  "peak_dd_pct": 0.018,
+  "limits": {
+    "daily_loss_limit_inr": 2000.0,
+    "max_drawdown_from_peak_pct": 0.20
+  },
+  "books": [
+    {
+      "underlying": "NIFTY",
+      "dd_pct": 0.01,
+      "dd_mode": "live",
+      "day_pnl": 0.0,
+      "month_pnl": 4200.0
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "dd_pct": 0.018,
+      "dd_mode": "live",
+      "day_pnl": -120.5,
+      "month_pnl": 800.0
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|-------|--------|
+| `tripped` | Any book `dd_mode == "halted"` (peak DD) |
+| `soft_halt` | Month halt and/or daily halt |
+| `trip_reason` | Human string or `null` when healthy |
+| `peak_dd_pct` | Worst book DD as **fraction** (e.g. `0.018` = 1.8%), ≤4 dp — not percent points |
+| `limits.daily_loss_limit_inr` | From lab config; may be `null` |
+| `limits.max_drawdown_from_peak_pct` | Fraction from config (default `0.20`) |
+| `books[].dd_pct` / `dd_mode` / `day_pnl` / `month_pnl` | Per-book headroom |
+
+---
+
+## 16d. `GET /api/v1/desk/audit/tail` (what happened)
+
+**Allowlisted** for a filterable ops/client activity panel. Prefer durable day file (`data/audit/events_YYYY-MM-DD.jsonl`); falls back to in-memory runner audit.
+
+**Query:** `limit` — default **100**, max **500**.
+
+Secret fields (`access_token`, `totp*`, `pin`, `*_secret`, API keys, etc.) are replaced with `"[redacted]"`. Event `kind` strings stay as-is — UI maps labels.
+
+**`data`:**
+
+```json
+{
+  "count": 3,
+  "limit": 100,
+  "events": [
+    {
+      "ts": "2026-08-26T03:40:00Z",
+      "kind": "trading.start",
+      "mode": "paper",
+      "operator_id": "schedule",
+      "execution": "manual"
+    },
+    {
+      "ts": "2026-08-26T04:05:12Z",
+      "kind": "order.paper_place",
+      "underlying": "NIFTY",
+      "sleeve": "fade",
+      "lots": 10,
+      "operator_id": "ui",
+      "trace_id": "NIFTY:fade:2026-08-26"
+    },
+    {
+      "ts": "2026-08-26T10:00:00Z",
+      "kind": "trading.stop",
+      "operator_id": "schedule",
+      "reason": "eod"
+    }
+  ]
+}
+```
+
+Example kinds (non-exhaustive): `trading.start`, `trading.stop`, `trading.schedule_arm`, `order.paper_place`, `order.submitted`, `order.cancel`, `lab.journal`, `kill_switch`, `token.renew_manual` (token values redacted).
+
+---
+
 ## 17. `GET /api/v1/desk/research/stable`
 
 Locked catalog. Server picks lowest peak DD. UI does not pick the pack.
@@ -976,9 +1369,11 @@ Optional. Connecting does **not** advance trading cycles or place orders.
 ```
 
 `health.tick.data` is a subset of `GET /status` plus `trigger` (same object as `GET /triggers/active`) and `seq`.  
-Delta payloads match the corresponding REST row shapes. Emitted on OMS/mock mutations (not every raw mark).  
-Tick / mark conflation: **~1 s in mock**, ~5 s paper idle; `mark.batch` / `account.patch` reserved for a later pass.  
-UI: apply deltas in memory; use `GET /snapshot` only for boot, reconnect, mutations, and a slow safety net.
+Delta payloads match the corresponding REST row shapes. Book mutations emit `position.*` / `order.*` / `trade.append`.  
+**Live marks:** `mark.batch` ~250 ms (spots + `marks[]` + books MTM + today_net). Does **not** bump `seq`.  
+`signal.trigger` is immediate on auto fill (not delayed to the next health tick).  
+UI: apply `mark.batch` to **status and position rows in the same turn**; `GET /snapshot` only for boot, reconnect, mutations, seq **book** gaps, and a 30–60 s safety net.  
+Handshake: [`UI_HANDSHAKE_LIVE_TICK.md`](./UI_HANDSHAKE_LIVE_TICK.md).
 
 ---
 
@@ -1052,12 +1447,17 @@ Keep on the server for ops. Do not wire screens to these.
 |------|-----|
 | `GET /api/v1/desk/health/full` | Nested ops dump |
 | `GET /api/v1/desk/runner` | Use `/status` |
-| `/signals/last-cycle`, `/signals/rejected` | Use `/signals/today` |
-| `/safety/*` | Kill is read-only on `/status` |
-| `/audit/*` | Forensics |
+| `/safety/kill-switch` **POST** | Forbidden for trader UI (product lock) |
+| `/safety/*` other than documented GETs | Ops / later tickets |
 | `/orders/queue` | Internal |
 | `/cycle/tick` | Runner-internal |
 | `/system/token*` | No token/PIN/TOTP UI |
+
+`GET /signals/rejected` and `GET /signals/last-cycle` are **allowlisted** for the decision log (see §14b / §14c). Still prefer `/signals/today` for the compass.
+
+`GET /api/v1/desk/safety/circuit-breaker` is **allowlisted** for Home Risk (read-only). **Never** `POST /safety/kill-switch` from the trader UI.
+
+`GET /api/v1/desk/audit/tail` is **allowlisted** for the what-happened panel (redacted; see §16d).
 
 ---
 

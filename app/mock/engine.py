@@ -437,13 +437,25 @@ class MockEngine:
         lot = int(DEFAULT_LOT.get(und, 65))
         lots_fade = 10 if und == "NIFTY" else 4
         lots_orb = 2 if und == "BANKNIFTY" else 0
+        # Parity with live sleeve_gates headroom fields (D1); stub numbers for mock UI.
+        head = {
+            "dd_mode": "live",
+            "dd_pct": 0.018,
+            "day_pnl": -120.5,
+            "month_pnl": 4200.0,
+            "daily_cap": 2000.0,
+            "monthly_cap": 15000.0,
+            "premium_budget": 25000.0 if und == "NIFTY" else 50000.0,
+            "deploy_frac": 0.25,
+        }
         sleeves = [
-            {"sleeve": "fade", "allow": True, "lots": lots_fade, "reason": None},
+            {"sleeve": "fade", "allow": True, "lots": lots_fade, "reason": None, **head},
             {
                 "sleeve": "orb",
                 "allow": lots_orb > 0,
                 "lots": lots_orb,
                 "reason": None if lots_orb > 0 else "ORB is denied after a fade loss",
+                **head,
             },
         ]
         return {
@@ -553,8 +565,10 @@ class MockEngine:
             "available_cash": 185000.0,
             "nifty_spot": (spots["NIFTY"] or {}).get("ltp"),
             "nifty_change_pct": (spots["NIFTY"] or {}).get("change_pct"),
+            "nifty_change_pts": (spots["NIFTY"] or {}).get("change_pts"),
             "banknifty_spot": (spots["BANKNIFTY"] or {}).get("ltp"),
             "banknifty_change_pct": (spots["BANKNIFTY"] or {}).get("change_pct"),
+            "banknifty_change_pts": (spots["BANKNIFTY"] or {}).get("change_pts"),
             "open_positions": int(pos.get("row_count") or 0),
             "realized_pnl_today": realized,
             "unrealized_pnl": unreal,

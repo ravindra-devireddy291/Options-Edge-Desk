@@ -462,16 +462,60 @@ def latest_spot(security_id: str) -> Optional[float]:
     return closes[-1] if closes else None
 
 
-def _change_pct(closes: List[float]) -> Optional[float]:
-    if len(closes) < 2:
+def _bar_day(stamp: Any):
+    """IST calendar date for a Dhan intraday timestamp."""
+    from datetime import datetime, timezone
+
+    from app.session import IST
+
+    try:
+        if isinstance(stamp, (int, float)):
+            ts = int(stamp)
+            if ts > 10_000_000_000:
+                ts //= 1000
+            return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IST).date()
+        s = str(stamp).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=IST)
+        return dt.astimezone(IST).date()
+    except Exception:
         return None
+
+
+def _spot_move(closes: List[float], stamps: List[Any]) -> Dict[str, Optional[float]]:
+    """LTP + day change vs previous trading day's last close (Groww/NSE style)."""
+    if not closes:
+        return {"ltp": None, "change_pct": None, "change_pts": None}
     ltp = closes[-1]
-    prev = closes[0]
-    if len(closes) > 30:
-        prev = closes[-31]
-    if prev == 0:
-        return None
-    return round(100.0 * (ltp - prev) / prev, 4)
+    prev: Optional[float] = None
+    if stamps and len(stamps) >= len(closes):
+        by_day: Dict[Any, float] = {}
+        order: List[Any] = []
+        for c, t in zip(closes, stamps[: len(closes)]):
+            d = _bar_day(t)
+            if d is None:
+                continue
+            if d not in by_day:
+                order.append(d)
+            by_day[d] = float(c)
+        if len(order) >= 2:
+            prev = by_day[order[-2]]
+        elif order:
+            # Only one session in the window — vs that session's open (first bar).
+            first_day = order[-1]
+            for c, t in zip(closes, stamps[: len(closes)]):
+                if _bar_day(t) == first_day:
+                    prev = float(c)
+                    break
+    if prev is None and len(closes) > 1:
+        # No usable stamps: ≈ previous session (~375 cash minutes).
+        prev = closes[-376] if len(closes) > 400 else closes[0]
+    if prev is None or prev == 0:
+        return {"ltp": ltp, "change_pct": None, "change_pts": None}
+    pts = round(ltp - prev, 2)
+    pct = round(100.0 * pts / prev, 4)
+    return {"ltp": ltp, "change_pct": pct, "change_pts": pts}
 
 
 def spots() -> Dict[str, Optional[float]]:
@@ -490,17 +534,17 @@ def spots_with_change() -> Dict[str, Dict[str, Optional[float]]]:
     if cached is not None and now - float(_SPOTS_CACHE.get("at") or 0) < 5.0:
         return cached
     out: Dict[str, Dict[str, Optional[float]]] = {
-        "NIFTY": {"ltp": None, "change_pct": None},
-        "BANKNIFTY": {"ltp": None, "change_pct": None},
+        "NIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
+        "BANKNIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
     }
     for name, sid in (("NIFTY", NIFTY_SECURITY_ID), ("BANKNIFTY", BN_SECURITY_ID)):
         try:
-            closes, _ = _index_series(sid)
+            closes, stamps = _index_series(sid)
         except Exception:
             continue
         if not closes:
             continue
-        out[name] = {"ltp": closes[-1], "change_pct": _change_pct(closes)}
+        out[name] = _spot_move(closes, stamps)
     _SPOTS_CACHE["at"] = now
     _SPOTS_CACHE["data"] = out
     return out
@@ -812,3 +856,112 @@ def place_order(
 def cancel_order(order_id: str) -> Dict[str, Any]:
     raw = _request("DELETE", f"/orders/{order_id}", sleep_s=0.2)
     return {"order_id": order_id, "raw": raw}
+
+
+def get_order(order_id: str) -> Dict[str, Any]:
+    raw = _request("GET", f"/orders/{order_id}", sleep_s=0.1)
+    if isinstance(raw, list):
+        return raw[0] if raw else {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def modify_order(
+    order_id: str,
+    *,
+    quantity: int,
+    price: float,
+    order_type: str = "LIMIT",
+) -> Dict[str, Any]:
+    body = {
+        "dhanClientId": credentials()[0],
+        "orderId": str(order_id),
+        "orderType": order_type,
+        "legName": "",
+        "quantity": int(quantity),
+        "price": float(price),
+        "disclosedQuantity": 0,
+        "triggerPrice": 0.0,
+        "validity": "DAY",
+    }
+    raw = _request("PUT", f"/orders/{order_id}", body, sleep_s=0.15)
+    return {"order_id": order_id, "raw": raw}
+
+
+def place_sl_market(
+    *,
+    security_id: str,
+    quantity: int,
+    trigger_price: float,
+    exchange_segment: str = SEGMENT_OPT,
+    product_type: str = "INTRADAY",
+    correlation_id: Optional[str] = None,
+    tag: str = "edge-desk-sl",
+) -> Dict[str, Any]:
+    cid = correlation_id or f"edsl-{uuid.uuid4().hex[:12]}"
+    body = {
+        "dhanClientId": credentials()[0],
+        "correlationId": cid[:50],
+        "transactionType": "SELL",
+        "exchangeSegment": exchange_segment,
+        "productType": product_type,
+        "orderType": "STOP_LOSS_MARKET",
+        "validity": "DAY",
+        "securityId": str(security_id),
+        "quantity": int(quantity),
+        "price": 0.0,
+        "triggerPrice": float(trigger_price),
+        "disclosedQuantity": 0,
+        "afterMarketOrder": False,
+        "boProfitValue": 0,
+        "boStopLossValue": 0,
+    }
+    raw = _request("POST", "/orders", body, sleep_s=0.2)
+    return {"correlation_id": cid, "raw": raw, "tag": tag}
+
+
+def place_tp_limit(
+    *,
+    security_id: str,
+    quantity: int,
+    price: float,
+    exchange_segment: str = SEGMENT_OPT,
+    product_type: str = "INTRADAY",
+    correlation_id: Optional[str] = None,
+    tag: str = "edge-desk-tp",
+) -> Dict[str, Any]:
+    cid = correlation_id or f"edtp-{uuid.uuid4().hex[:12]}"
+    return place_order(
+        security_id=security_id,
+        exchange_segment=exchange_segment,
+        transaction_type="SELL",
+        quantity=int(quantity),
+        order_type="LIMIT",
+        product_type=product_type,
+        price=float(price),
+        tag=tag,
+        correlation_id=cid[:50],
+    )
+
+
+def place_tp_limit(
+    *,
+    security_id: str,
+    quantity: int,
+    price: float,
+    exchange_segment: str = SEGMENT_OPT,
+    product_type: str = "INTRADAY",
+    correlation_id: Optional[str] = None,
+    tag: str = "edge-desk-tp",
+) -> Dict[str, Any]:
+    cid = correlation_id or f"edtp-{uuid.uuid4().hex[:12]}"
+    return place_order(
+        security_id=security_id,
+        exchange_segment=exchange_segment,
+        transaction_type="SELL",
+        quantity=int(quantity),
+        order_type="LIMIT",
+        product_type=product_type,
+        price=float(price),
+        tag=tag,
+        correlation_id=cid[:50],
+    )

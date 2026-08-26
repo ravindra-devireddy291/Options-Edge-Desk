@@ -27,6 +27,11 @@ def env_paper_auto() -> bool:
     return os.environ.get("DESK_PAPER_AUTO", "").strip().lower() in ("1", "true", "yes")
 
 
+def paper_only() -> bool:
+    """When set, never fall back to mock replay — paper+auto only."""
+    return os.environ.get("DESK_PAPER_ONLY", "").strip().lower() in ("1", "true", "yes")
+
+
 def schedule_wanted() -> bool:
     return env_paper_auto() or bool(getattr(RUNNER, "paper_auto_schedule", False))
 
@@ -47,8 +52,9 @@ def in_cash_window() -> bool:
 
 
 def _live_cutover_ready() -> bool:
+    """True when master live is on and at least one book flag is on (per-book G5 still gates place)."""
     s = get_settings()
-    return bool(s.live_enabled and s.live_nifty and s.live_banknifty)
+    return bool(s.live_enabled and (s.live_nifty or s.live_banknifty))
 
 
 def _discard_mock() -> None:
@@ -183,9 +189,12 @@ def tick() -> None:
         return
     if RUNNER.trading_active() and (RUNNER.mode or "").lower() in ("paper", "live"):
         disarm(reason="session_end")
-        arm_mock(reason="after_cash_window")
+        if not paper_only():
+            arm_mock(reason="after_cash_window")
         return
     # Weekend / after hours: keep mock available for testing (Dhan positions stay).
+    if paper_only():
+        return
     if _operator_hold_mock:
         return
     if (RUNNER.mode or "").lower() == "live" and RUNNER.trading_active():

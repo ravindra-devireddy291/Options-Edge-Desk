@@ -25,9 +25,23 @@ Start body:
 | Field | AS-BUILT |
 |-------|----------|
 | `mode: "mock"` | Arms sim ledger. No Dhan for quotes/place/PnL. |
-| `mode: "paper"` | Arms Dhan paper + lab shadow. Honors `execution`. |
-| `mode: "live"` | Same desk as paper against Dhan live. Requires `DESK_LIVE_ENABLED` + both `LIVE_*` book flags. Weekday schedule arms live after that cutover. |
+| `mode: "paper"` | **Same desk path as live** against Dhan (quotes, positions, place, marks, blotter). Lab shadow drives compass only. |
+| `mode: "live"` | Identical contracts and code path as paper. Extra arming gate only: `DESK_LIVE_ENABLED` + `LIVE_*` book flags + `confirm_live`. |
 | `execution` | `manual` \| `auto` on **all** modes. |
+
+### Paper ≡ live (product rule)
+
+**Endpoints, WS frames, status/book/trade shapes do not change when you flip a book to live.**  
+Per-book OMS backend differs:
+
+| Book state | Place / cancel | Positions / MTM |
+|------------|----------------|-----------------|
+| **Paper** (default) | Desk paper OMS — fill @ live LTP, `broker_fill.source=desk_paper`, **no Dhan money** | Paper ledger + live marks |
+| **Live** | Dhan `/orders` | Dhan positions |
+
+**Live cutover (per underlying):** `DESK_LIVE_ENABLED=1` **and** `LIVE_NIFTY` / `LIVE_BANKNIFTY` **and** that book’s G5 fill sessions ≥ **20**. NIFTY can go live while BANKNIFTY stays paper.
+
+Lab lots/variants stay in the lab repos — desk does not invent sizing.
 
 ```
                     MANUAL                         AUTO
@@ -192,21 +206,21 @@ Lab research is **mode-independent**. Mock tape is always `most_stable`, not the
 
 ---
 
-## 4. Tick, PnL, and “changed” data (no extra APIs)
+## 4. Tick, PnL, and “changed” data
 
-There is **no** dedicated tick WebSocket for option LTP and **no** delta/diff endpoint. The UI reconstructs “live” from poll + the existing WS.
+Live tape is `WS mark.batch` (~250 ms). There is still **no** option-LTP WebSocket for the ticket. Full contract: [`UI_HANDSHAKE_LIVE_TICK.md`](./UI_HANDSHAKE_LIVE_TICK.md).
 
 ### 4.1 Index / Home tape (spots + session + net)
 
 | Channel | Payload | Cadence |
 |---------|---------|---------|
-| `GET /snapshot` | Full status + positions + orders + trades + signals + triggers + `seq` | Boot / soft reconcile |
-| `GET /status` | spots, `%`, `today_net`, `unrealized_pnl`, `realized_pnl_today`, `open_positions`, books, session | Probe / partial clients |
-| `WS health.tick` | **Subset:** process, trading, mode, token, kill, halt, broker, session, two spots, `today_net`, `open_positions`, mock `execution`/`replay`, `seq` | ~1 s mock / ~5 s paper |
+| `GET /snapshot` | Full status + positions + orders + trades + signals + triggers + `seq` | Boot / 30–60 s reconcile |
+| `GET /status` | Probe / partial clients | Rare |
+| `WS mark.batch` | spots, `%`, `today_net`, `unrealized_pnl`, `books[]`, `marks[]` | ~250 ms |
+| `WS health.tick` | Process, trading, mode, token, kill, halt, broker, session, cash | ~1 s mock / ~5 s paper |
 | `WS position.*` / `order.*` / `trade.append` | Mutation deltas (REST row shapes) | On place/fill/cancel |
-| `GET /quotes/spot` | Optional extra spots | As needed |
 
-`health.tick` is **not** full `/status` (no `books[]`, no full PnL split besides `today_net`). After a fill, poll `/status` + `/positions` (or rely on next health.tick `today_net` / `open_positions`).
+After a fill: `position.upsert` + `signal.trigger` — do not poll `/positions`.
 
 ### 4.2 Option LTP (ticket)
 
@@ -219,9 +233,9 @@ There is **no** dedicated tick WebSocket for option LTP and **no** delta/diff en
 
 | Channel | Mock | Paper |
 |---------|------|-------|
-| `GET /positions` | `ltp`, `unrealized_pnl`, `average_price`, qty, `tape_qty`, `overlay_qty` | Dhan MTM |
-| `GET /status` | Desk `unrealized_pnl`, `today_net`, `books[].open_mtm` | Shadow realized + broker MTM |
-| Mock keeper | Re-marks all open rows every ~0.25 s **even if UI is closed** | N/A — broker is source of truth; poll/sync |
+| `WS mark.batch.marks[]` | Ledger LTP + MTM | Dhan feed LTP × qty vs avg |
+| `GET /positions` | Boot / gap only | Boot / gap only |
+| Mock keeper | Re-marks every ~0.25 s and pushes `mark.batch` | Dhan feed; REST health ~5 s resyncs qty/avg |
 
 ### 4.4 Trades / compass (“what filled”)
 
@@ -229,18 +243,18 @@ There is **no** dedicated tick WebSocket for option LTP and **no** delta/diff en
 |---------|-----|
 | `GET /trades/today` | Day blotter: open + closed rounds, `exit_reason`, `net_pnl` |
 | `GET /signals/today` | Compass: PENDING / EXECUTED / SKIPPED (mock) or journal statuses (paper) |
-| Fill notice | Toast at the moment of auto BUY/SELL; blotter remains the system of record |
+| Fill notice | WS `signal.trigger` at fill time; blotter remains the system of record |
 
-There is no `/pnl/stream` and no “changed since cursor” API. **GAP (optional):** client may ask for `updated_at` on position rows; not required for MVP if they poll Book on focus + after trigger/fill.
+`mark.batch` is the PnL stream. Snapshot is the safety net.
 
 ### 4.5 Who must keep polling
 
 | UI closed / laptop sleep | Mock auto/manual | Paper |
 |--------------------------|------------------|-------|
-| Engine still runs? | **Yes** (keeper) | Paper: Dhan/lab continue; desk does not auto-place |
-| UI state | Stale until next `/status` / WS reconnect | Same |
-| Missed approval trigger | Next `/triggers/active` shows newest PENDING (if not skipped) | Newest PENDING |
-| Missed auto fill | Positions/Day already updated; newest unacked fill_notice on `/triggers/active` | Same |
+| Engine still runs? | **Yes** (keeper) | Paper: Dhan/lab continue |
+| UI state | Stale until WS reconnect + snapshot | Same |
+| Missed approval trigger | Next `signal.trigger` / `/triggers/active` | Newest PENDING |
+| Missed auto fill | Positions already updated; newest unacked fill_notice on reconnect | Same |
 
 ---
 

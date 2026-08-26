@@ -23,6 +23,16 @@ def ack(trigger_id: str, action: str = "dismiss") -> Dict[str, Any]:
             _acked.add(tid)
             global _fills
             _fills = [f for f in _fills if str(f.get("trigger_id")) != tid]
+    nxt = newest_fill()
+    try:
+        from app.desk_events import emit_signal_clear, emit_signal_trigger
+
+        if nxt.get("active") and nxt.get("trigger"):
+            emit_signal_trigger(nxt["trigger"])
+        elif tid:
+            emit_signal_clear(tid)
+    except Exception:
+        pass
     return {
         "accepted": True,
         "code": "OK",
@@ -150,6 +160,12 @@ def push_fill_notice(
         _fills.append(trig)
         if len(_fills) > 40:
             _fills = _fills[-40:]
+    try:
+        from app.desk_events import emit_signal_trigger
+
+        emit_signal_trigger(trig)
+    except Exception:
+        pass
     return {"active": True, "trigger": dict(trig)}
 
 

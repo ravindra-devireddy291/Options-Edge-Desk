@@ -27,40 +27,6 @@ FILES = [
     "requirements.txt",
     "README.md",
     ".env.example",
-    "app/__init__.py",
-    "app/auth.py",
-    "app/main.py",
-    "app/oms.py",
-    "app/session.py",
-    "app/triggers.py",
-    "app/idempotency.py",
-    "app/auto_engine.py",
-    "app/desk_log.py",
-    "app/schedule.py",
-    "app/paper_archive.py",
-    "app/paper_e2e.py",
-    "app/lab_sync.py",
-    "app/ws_hub.py",
-    "app/desk_events.py",
-    "app/mock/__init__.py",
-    "app/mock/clock.py",
-    "app/mock/tape_index.py",
-    "app/mock/marks.py",
-    "app/mock/ledger.py",
-    "app/mock/engine.py",
-    "app/brokers/__init__.py",
-    "app/brokers/dhan/__init__.py",
-    "app/brokers/dhan/client.py",
-    "app/brokers/dhan/contracts.py",
-    "app/books/__init__.py",
-    "app/books/adapters.py",
-    "app/books/shadow_oms.py",
-    "app/research/__init__.py",
-    "app/research/stable.py",
-    "app/runners/__init__.py",
-    "app/runners/state.py",
-    "app/schemas/__init__.py",
-    "app/schemas/envelope.py",
     "docs/MVP_UI_API.md",
     "docs/BACKEND_REQUIREMENTS.md",
     "docs/UI_API_CONTRACT.md",
@@ -68,10 +34,52 @@ FILES = [
     "docs/MODE_SCENARIO_MATRIX.md",
     "docs/UI_COLLAB.md",
     "docs/DESK_SNAPSHOT_WS.md",
+    "docs/ACTION_PLAN_DESK.md",
+    "docs/ACTION_PLAN_INDEX.md",
+    "docs/README_DESK_UX_PLANS.md",
+    "docs/UX_REVIEW_CRITIQUE.md",
+    "docs/EXECUTION_ARMOR.md",
+    "docs/UI_HANDSHAKE_LIVE_TICK.md",
     "deploy/edge-desk.service",
     "deploy/nginx-desk.conf",
+    "deploy/edge-desk-host.service",
     "scripts/boot_desk.py",
+    "scripts/smoke_d1_d8.py",
+    "scripts/promote_lab_to_paper.py",
 ]
+
+
+def _discover_py_tree(*roots: str) -> list[str]:
+    out: list[str] = []
+    for root in roots:
+        base = LOCAL / root
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            if any(part in {"__pycache__", ".venv", "graphify-out", ".cursor"} for part in path.parts):
+                continue
+            if root in {"app", "tests"} and path.suffix != ".py":
+                continue
+            if root == "deploy" and path.suffix not in {".service", ".conf", ".md"}:
+                continue
+            out.append(path.relative_to(LOCAL).as_posix())
+    return out
+
+
+def deploy_file_list() -> list[str]:
+    """All app/test/doc/deploy files needed on VPS (keeps pace with new modules)."""
+    discovered = _discover_py_tree("app", "tests", "deploy")
+    # Explicit docs + scripts + roots (may overlap; unique preserve order)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for rel in FILES + discovered:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        ordered.append(rel)
+    return ordered
 
 
 def run(c, cmd: str, timeout: int = 180, check: bool = True) -> str:
@@ -90,7 +98,7 @@ def main() -> int:
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(HOST, username=USER, password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
     run(c, "findmnt /mnt/sys || (mkdir -p /mnt/sys && mount /dev/vdb1 /mnt/sys)")
-    run(c, f"mkdir -p {CHROOT}{REMOTE}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,docs,deploy,data/audit,data/paper,scripts}}")
+    run(c, f"mkdir -p {CHROOT}{REMOTE}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,app/execution,docs,deploy,data/audit,data/paper,data/paper_ledger,scripts,tests}}")
     run(
         c,
         f"mkdir -p {CHROOT}/root/Options-Nifty-Edge-Lab/reports/shadow "
@@ -99,7 +107,7 @@ def main() -> int:
     )
 
     sftp = c.open_sftp()
-    for rel in FILES:
+    for rel in deploy_file_list():
         local = LOCAL / rel
         if not local.exists():
             print("skip", rel, flush=True)

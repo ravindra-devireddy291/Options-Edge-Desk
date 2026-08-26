@@ -19,6 +19,11 @@ from app.brokers.dhan import client as dhan
 from app.brokers.dhan.contracts import chain_snapshot, default_lot_size, resolve_contract
 from app.mock import MOCK
 from app.oms import cancel_paper, place_paper
+from app.research import brief as research_brief
+from app.research import cost as research_cost
+from app.research import g5 as research_g5
+from app.research import oos as research_oos
+from app.research import scale as research_scale
 from app.research import stable as research_stable
 from app.runners.state import RUNNER, _now
 from app.schemas.envelope import err, ok
@@ -47,12 +52,18 @@ async def _token_keeper() -> None:
 
 async def _mock_keeper() -> None:
     """Active sim clock: evaluate fills/exits even if the UI is not polling."""
+    from app.mark_stream import emit_mock_marks
     from app.mock import MOCK
 
     while True:
         try:
             if (RUNNER.mode or "").lower() == "mock" and RUNNER.trading_active() and MOCK.loaded:
-                await MOCK.exclusive(MOCK.tick)
+
+                def _step() -> None:
+                    MOCK.tick()
+                    emit_mock_marks()
+
+                await MOCK.exclusive(_step)
         except Exception:
             pass
         await asyncio.sleep(0.25)
@@ -112,6 +123,43 @@ async def _paper_archive_keeper() -> None:
         await asyncio.sleep(30.0)
 
 
+async def _desk_wire() -> None:
+    """One ticker for all WS clients: health.tick + paper mark.batch + trigger backup."""
+    import time as _time
+
+    from app.mark_stream import flush_paper_marks, remember_health
+
+    last_tid: Optional[str] = None
+    last_health = 0.0
+    while True:
+        mock = _mock_on()
+        try:
+            if not mock:
+                flush_paper_marks()
+            now = _time.monotonic()
+            every = 1.0 if mock else 5.0
+            if HUB.has_clients() and now - last_health >= every:
+                last_health = now
+                if mock:
+                    health = await MOCK.exclusive(health_tick_payload)
+                else:
+                    health = await asyncio.to_thread(health_tick_payload)
+                    remember_health(health)
+                    flush_paper_marks()
+                HUB.broadcast("health.tick", health, bump=False)
+                trig = health.get("trigger") or {"active": False, "trigger": None}
+                tid = (trig.get("trigger") or {}).get("trigger_id") if trig.get("active") else None
+                if tid and tid != last_tid:
+                    inner = trig.get("trigger") or trig
+                    HUB.broadcast("signal.trigger", inner, bump=False)
+                if last_tid and not tid:
+                    HUB.broadcast("signal.clear", {"trigger_id": last_tid}, bump=False)
+                last_tid = tid
+        except Exception:
+            pass
+        await asyncio.sleep(0.25)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     dhan.load_dotenv()
@@ -128,6 +176,10 @@ async def lifespan(_app: FastAPI):
     sched_task = asyncio.create_task(_paper_session_keeper())
     archive_task = asyncio.create_task(_paper_archive_keeper())
     lab_task = asyncio.create_task(_lab_journal_keeper())
+    from app.execution.runner import EXECUTION
+
+    exec_task = asyncio.create_task(EXECUTION.keeper())
+    wire_task = asyncio.create_task(_desk_wire())
     try:
         await asyncio.to_thread(dhan.ensure_fresh_token)
     except Exception:
@@ -140,7 +192,7 @@ async def lifespan(_app: FastAPI):
             await asyncio.to_thread(paper_archive.capture, reason="shutdown")
     except Exception:
         pass
-    for task in (token_task, mock_task, auto_task, sched_task, archive_task, lab_task):
+    for task in (token_task, mock_task, auto_task, sched_task, archive_task, lab_task, exec_task, wire_task):
         task.cancel()
         try:
             await task
@@ -228,8 +280,10 @@ def health_tick_payload() -> Dict[str, Any]:
         "session_label",
         "nifty_spot",
         "nifty_change_pct",
+        "nifty_change_pts",
         "banknifty_spot",
         "banknifty_change_pct",
+        "banknifty_change_pts",
         "available_cash",
         "today_net",
         "realized_pnl_today",
@@ -303,7 +357,7 @@ def desk_status_payload() -> Dict[str, Any]:
         broker_ok = False
     pos_rows: List[dict] = []
     try:
-        pos = dhan.positions_grid()
+        pos = _positions_payload()
         pos_rows = list(pos.get("rows") or [])
     except Exception:
         pos_rows = []
@@ -314,9 +368,17 @@ def desk_status_payload() -> Dict[str, Any]:
     realized = float(blotter.get("total_realized_pnl") or 0)
     today_net = round(realized + unreal, 2)
     book_rows = books.books_snapshot(_books(), position_rows=pos_rows)
+    try:
+        from app.mark_stream import sync_rows
+
+        sync_rows(pos_rows)
+    except Exception:
+        pass
+    from app.books.live_cutover import cutover_snapshot
     from app.desk_log import count_today
     from app.schedule import schedule_wanted
 
+    cutover = cutover_snapshot(_books())
     return {
         **base,
         "token_ok": _token_ok(),
@@ -328,8 +390,10 @@ def desk_status_payload() -> Dict[str, Any]:
         "available_cash": cash,
         "nifty_spot": (spots.get("NIFTY") or {}).get("ltp"),
         "nifty_change_pct": (spots.get("NIFTY") or {}).get("change_pct"),
+        "nifty_change_pts": (spots.get("NIFTY") or {}).get("change_pts"),
         "banknifty_spot": (spots.get("BANKNIFTY") or {}).get("ltp"),
         "banknifty_change_pct": (spots.get("BANKNIFTY") or {}).get("change_pct"),
+        "banknifty_change_pts": (spots.get("BANKNIFTY") or {}).get("change_pts"),
         "open_positions": len(pos_rows),
         "realized_pnl_today": realized,
         "unrealized_pnl": unreal,
@@ -338,8 +402,9 @@ def desk_status_payload() -> Dict[str, Any]:
         "books": book_rows,
         "paper_auto": bool(schedule_wanted() and (RUNNER.execution or "") == "auto"),
         "signals_today": int(compass.get("count") or 0),
-        "trades_today": int(blotter.get("trade_count") or 0),
+        "trades_today": int(blotter.get("closed_count") or 0),
         "log_events_today": count_today(),
+        "live_cutover": cutover,
     }
 
 
@@ -405,31 +470,57 @@ def health_full_payload() -> Dict[str, Any]:
 def _positions_payload() -> Dict[str, Any]:
     if _mock_on():
         return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
-    try:
-        return dhan.positions_grid()
-    except Exception as exc:  # noqa: BLE001
-        from app import paper_archive
+    from app.books.live_cutover import book_uses_dhan
+    from app import paper_oms
 
-        arch = paper_archive.load()
-        saved = (arch or {}).get("positions")
-        if isinstance(saved, dict):
-            return {**saved, "from_archive": True, "detail": str(exc)[:240]}
-        return {"rows": [], "row_count": 0, "snapshot_at": _now(), "detail": str(exc)}
+    book_list = _books()
+    dhan_unds = {b.name for b in book_list if book_uses_dhan(b.name, b)}
+    dhan_rows: list = []
+    detail = None
+    if dhan_unds:
+        try:
+            grid = dhan.positions_grid()
+            dhan_rows = list(grid.get("rows") or [])
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc)[:240]
+            from app import paper_archive
+
+            arch = paper_archive.load()
+            saved = (arch or {}).get("positions")
+            if isinstance(saved, dict):
+                dhan_rows = list(saved.get("rows") or [])
+    paper_rows = list((paper_oms.positions_grid().get("rows") or []))
+    rows = paper_oms.merge_position_rows(dhan_rows, paper_rows, dhan_underlyings=dhan_unds)
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "snapshot_at": _now(),
+        "detail": detail,
+    }
 
 
 def _orders_payload() -> Dict[str, Any]:
     if _mock_on():
         return MOCK.exclusive_sync(MOCK.ledger.open_orders)
-    try:
-        return dhan.open_orders_response()
-    except Exception as exc:  # noqa: BLE001
-        from app import paper_archive
+    from app.books.live_cutover import book_uses_dhan
+    from app import paper_oms
 
-        arch = paper_archive.load()
-        saved = (arch or {}).get("orders_open")
-        if isinstance(saved, dict):
-            return {**saved, "from_archive": True, "detail": str(exc)[:240]}
-        return {"orders": [], "count": 0, "snapshot_at": _now(), "detail": str(exc)}
+    book_list = _books()
+    dhan_unds = {b.name for b in book_list if book_uses_dhan(b.name, b)}
+    orders: list = []
+    detail = None
+    if dhan_unds:
+        try:
+            resp = dhan.open_orders_response()
+            for o in list(resp.get("orders") or []):
+                und = str(o.get("underlying") or "").upper()
+                if und in dhan_unds:
+                    orders.append(o)
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc)[:240]
+    # Paper fills immediately — no working paper orders.
+    paper_oms.open_orders()
+    return {"orders": orders, "count": len(orders), "snapshot_at": _now(), "detail": detail}
 
 
 def desk_snapshot_payload() -> Dict[str, Any]:
@@ -501,6 +592,72 @@ def research_stable_book(underlying: str, _: None = Depends(require_api_key)):
     return ok(payload)
 
 
+@app.get("/api/v1/desk/research/g5")
+def research_g5_readiness(
+    underlying: Optional[str] = None,
+    _: None = Depends(require_api_key),
+):
+    """Gate-5 readiness from lab G5_TRACKER.json (read-only; soft-fail missing files)."""
+    return ok(research_g5.g5_payload(_books(), underlying=underlying))
+
+
+@app.get("/api/v1/desk/research/oos")
+def research_oos_proof(
+    underlying: Optional[str] = None,
+    _: None = Depends(require_api_key),
+):
+    """Walk-forward / half-span confirmation for Lab Trust card (read-only)."""
+    s = get_settings()
+    return ok(
+        research_oos.oos_payload(
+            nifty_root=s.nifty_lab_root,
+            bn_root=s.bn_lab_root,
+            underlying=underlying,
+        )
+    )
+
+
+@app.get("/api/v1/desk/research/cost-honesty")
+def research_cost_honesty(
+    underlying: Optional[str] = None,
+    _: None = Depends(require_api_key),
+):
+    """Pre-aggregated cost drag summary (no raw trade CSV). BN primary; NIFTY soft-empty."""
+    s = get_settings()
+    return ok(
+        research_cost.cost_honesty_payload(
+            nifty_root=s.nifty_lab_root,
+            bn_root=s.bn_lab_root,
+            underlying=underlying,
+        )
+    )
+
+
+@app.get("/api/v1/desk/research/scale")
+def research_scale_table(
+    underlying: Optional[str] = None,
+    _: None = Depends(require_api_key),
+):
+    """Capital-scale AUM table from BN scale JSON (no trade arrays)."""
+    s = get_settings()
+    return ok(
+        research_scale.scale_payload(
+            nifty_root=s.nifty_lab_root,
+            bn_root=s.bn_lab_root,
+            underlying=underlying,
+        )
+    )
+
+
+@app.get("/api/v1/desk/research/brief")
+def research_brief_card(
+    day: Optional[str] = None,
+    _: None = Depends(require_api_key),
+):
+    """Pre-market TRADE_CARD markdown per book (default: today IST)."""
+    return ok(research_brief.brief_payload(_books(), day=day))
+
+
 @app.get("/api/v1/desk/health/full")
 def health_full(_: None = Depends(require_api_key)):
     return ok(health_full_payload())
@@ -563,7 +720,7 @@ def runner_start(body: StartRunnerBody, _: None = Depends(require_api_key)):
                     "message": "Live is off until DESK_LIVE_ENABLED=1 after client confirmation.",
                 }
             )
-        if not (settings.live_nifty and settings.live_banknifty):
+        if not (settings.live_nifty or settings.live_banknifty):
             return ok(
                 {
                     "accepted": False,
@@ -572,7 +729,7 @@ def runner_start(body: StartRunnerBody, _: None = Depends(require_api_key)):
                     "runner_state": RUNNER.state,
                     "trading_active": False,
                     "desk_process": "alive",
-                    "message": "Live books are off until LIVE_NIFTY=1 and LIVE_BANKNIFTY=1.",
+                    "message": "Enable LIVE_NIFTY and/or LIVE_BANKNIFTY after that book passes G5 (≥20 fills).",
                 }
             )
         if not body.confirm_live:
@@ -739,6 +896,55 @@ def trades_today(
     if _mock_on() and not day:
         return ok(MOCK.exclusive_sync(MOCK.ledger.trades_today))
     return ok(_trades_payload(day))
+
+
+@app.get("/api/v1/desk/trades/history")
+def trades_history(
+    from_day: str = Query(..., alias="from", description="IST start YYYY-MM-DD"),
+    to_day: Optional[str] = Query(None, alias="to", description="IST end YYYY-MM-DD; default today"),
+    _: None = Depends(require_api_key),
+):
+    """Paper/live blotter across days — same row shape as /trades/today, concatenated."""
+    from datetime import date as _date, timedelta
+
+    try:
+        start = _date.fromisoformat(from_day)
+    except ValueError:
+        return ok({"error": "invalid from", "from": from_day, "trades": [], "trade_count": 0})
+    try:
+        end = _date.fromisoformat(to_day) if to_day else session_day()
+    except ValueError:
+        return ok({"error": "invalid to", "to": to_day, "trades": [], "trade_count": 0})
+    if end < start:
+        start, end = end, start
+    if _mock_on():
+        # Mock is single-session — return today's blotter only.
+        data = MOCK.exclusive_sync(MOCK.ledger.trades_today)
+        return ok({**data, "from": from_day, "to": end.isoformat(), "days": 1})
+    all_trades: List[dict] = []
+    day = start
+    while day <= end:
+        chunk = _trades_payload(day.isoformat())
+        all_trades.extend(list(chunk.get("trades") or []))
+        day += timedelta(days=1)
+    realized = [t for t in all_trades if t.get("exit_reason") not in ("open", "") and t.get("realized_pnl") is not None]
+    total = round(sum(float(t["realized_pnl"]) for t in realized), 2)
+    total_net = round(sum(float(t["net_pnl"]) for t in realized if t.get("net_pnl") is not None), 2)
+    total_costs = round(sum(float(t.get("costs") or 0) for t in all_trades), 2)
+    return ok(
+        {
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "days": (end - start).days + 1,
+            "trades": all_trades,
+            "trade_count": len(all_trades),
+            "closed_count": len(realized),
+            "total_realized_pnl": total,
+            "total_costs": total_costs,
+            "total_net_pnl": total_net,
+            "lots_traded": int(sum(int(t.get("lots") or 0) for t in all_trades)),
+        }
+    )
 
 
 @app.get("/api/v1/desk/signals/today")
@@ -1182,8 +1388,18 @@ def token_renew(_: None = Depends(require_api_key)):
 
 @app.get("/api/v1/desk/audit/tail")
 def audit_tail(limit: int = 100, _: None = Depends(require_api_key)):
-    events = RUNNER.audit[-max(1, min(limit, 500)) :]
-    return ok({"count": len(events), "events": events})
+    """UI-safe recent events (redacted). Default limit 100, max 500."""
+    from app import audit_public, desk_log
+
+    n = audit_public.clamp_limit(limit)
+    durable = desk_log.load_today(limit=n)
+    return ok(
+        audit_public.public_tail(
+            memory_events=list(RUNNER.audit),
+            durable_events=durable,
+            limit=n,
+        )
+    )
 
 
 # ---------- paper OMS ----------
@@ -1256,43 +1472,9 @@ async def ws_desk(websocket: WebSocket):
             "seq": RUNNER.seq,
         }
     )
-    last_tid: Optional[str] = None
     try:
         while True:
-            if _mock_on():
-                health = await MOCK.exclusive(health_tick_payload)
-            else:
-                health = health_tick_payload()
-            trig = health.get("trigger") or {"active": False, "trigger": None}
-            await websocket.send_json(
-                {
-                    "type": "health.tick",
-                    "server_time": _now(),
-                    "data": health,
-                    "seq": RUNNER.seq,
-                }
-            )
-            tid = (trig.get("trigger") or {}).get("trigger_id") if trig.get("active") else None
-            if tid and tid != last_tid:
-                await websocket.send_json(
-                    {
-                        "type": "signal.trigger",
-                        "server_time": _now(),
-                        "data": trig["trigger"],
-                        "seq": RUNNER.seq,
-                    }
-                )
-            if last_tid and not tid:
-                await websocket.send_json(
-                    {
-                        "type": "signal.clear",
-                        "server_time": _now(),
-                        "data": {"trigger_id": last_tid},
-                        "seq": RUNNER.seq,
-                    }
-                )
-            last_tid = tid
-            await asyncio.sleep(1.0 if _mock_on() else 5.0)
+            await websocket.receive_text()
     except WebSocketDisconnect:
         return
     except Exception:
