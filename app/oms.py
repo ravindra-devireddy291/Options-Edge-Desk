@@ -351,6 +351,8 @@ def _place_desk_paper(
     reason = "eod_flatten" if force_eod else ("exit" if side == "SELL" else "entry")
 
     if side == "BUY":
+        stop_pct, tp_pct = books.sleeve_risk_params(book, sleeve)
+        trail_pct, trail_activate_pct = books.sleeve_trail_params(book, sleeve)
         filled = paper_oms.apply_buy(
             underlying=und,
             sleeve=sleeve,
@@ -364,6 +366,11 @@ def _place_desk_paper(
             expiry=getattr(contract, "expiry", None),
             strike=getattr(contract, "strike", None),
             option_type=getattr(contract, "option_type", None),
+            stop_pct=stop_pct,
+            tp_pct=tp_pct,
+            trail_pct=trail_pct,
+            trail_activate_pct=trail_activate_pct,
+            pack_id=str(getattr(book, "pack_id", None) or getattr(body, "pack_id", None) or ""),
         )
         broker_id = filled["broker_order_id"]
         try:
@@ -393,6 +400,7 @@ def _place_desk_paper(
             price=live_ltp,
             client_order_id=client_oid,
             reason=reason,
+            pack_id=str(getattr(book, "pack_id", None) or getattr(body, "pack_id", None) or ""),
         )
         if not filled.get("ok"):
             return _reject(
@@ -518,7 +526,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
     if (RUNNER.mode or "").lower() == "mock":
         return finish(_place_mock(body, dry_run=dry_run, sleeve=sleeve, und=und, side=side, operator_id=operator_id, trace_id=trace_id))
 
-    book = books.book_by_underlying(book_list, und)
+    book = books.book_for_place(book_list, und, getattr(body, "pack_id", None))
     if book is None:
         return finish(_reject("CONTRACT_RESOLVE_FAILED", f"unknown underlying {und}"))
 
@@ -684,7 +692,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
         operator_id=operator_id,
         trace_id=trace_id,
         oms="dhan" if use_dhan else "paper",
-        **{k: v for k, v in order_rec.items() if k not in ("gate", "contract")},
+        **{k: v for k, v in order_rec.items() if k not in ("gate", "contract", "trace_id", "operator_id")},
     )
 
     # Paper OMS: simulate fill @ live LTP — no Dhan place (zero money).
@@ -719,6 +727,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
         _schedule_feed_subscribe(contract.security_id)
         if ARMOR.enabled and side == "BUY":
             stop_pct, tp_pct = books.sleeve_risk_params(book, sleeve)
+            trail_pct, trail_activate_pct = books.sleeve_trail_params(book, sleeve)
             raw = place_armed_entry(
                 underlying=und,
                 sleeve=sleeve,
@@ -728,6 +737,8 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
                 side=side,
                 stop_pct=stop_pct,
                 tp_pct=tp_pct,
+                trail_pct=trail_pct,
+                trail_activate_pct=trail_activate_pct,
                 correlation_id=corr_id,
                 client_order_id=client_oid,
                 ref_px=float(live_ltp),
@@ -868,6 +879,16 @@ def cancel_paper(order_id: str, operator_id: str = "ui") -> Dict[str, Any]:
     if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
         RUNNER.audit_event("order.cancel", order_id=oid, operator_id=operator_id, mode="mock")
         return MOCK.ledger.cancel(oid)
+    from app import paper_oms
+
+    if paper_oms.is_paper_order_id(oid):
+        RUNNER.audit_event("order.cancel", order_id=oid, operator_id=operator_id, oms="paper")
+        return {
+            **base,
+            "accepted": False,
+            "code": "ALREADY_FILLED",
+            "message": "Paper fills immediately. Order already filled. Check Active trades.",
+        }
     try:
         raw = dhan.cancel_order(oid)
         RUNNER.audit_event("order.cancel", order_id=oid, operator_id=operator_id)

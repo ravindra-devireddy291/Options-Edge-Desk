@@ -9,6 +9,7 @@ from pathlib import Path
 import paramiko
 
 HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
+PORT = int(os.environ.get("EDGE_VPS_PORT", "443"))
 
 
 def load_env() -> None:
@@ -38,9 +39,9 @@ def main() -> int:
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        c.connect(HOST, username="root", password=pw, timeout=60, allow_agent=False, look_for_keys=False)
+        c.connect(HOST, port=PORT, username="root", password=pw, timeout=60, allow_agent=False, look_for_keys=False)
     except Exception as exc:
-        print(f"SSH failed ({HOST}:22): {exc}", file=sys.stderr)
+        print(f"SSH failed ({HOST}:{PORT}): {exc}", file=sys.stderr)
         print("Fix SSH/firewall, then re-run: py -3 scripts/restart_public_tunnel_vps.py", file=sys.stderr)
         return 1
 

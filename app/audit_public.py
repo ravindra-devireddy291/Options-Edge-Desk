@@ -22,6 +22,7 @@ SECRET_KEY_EXACT = frozenset(
         "bearer",
         "dhan_access_token",
         "accessToken",
+        "access_token_masked",
     }
 )
 

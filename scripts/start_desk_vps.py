@@ -51,8 +51,8 @@ vals.update({{
   'DESK_MODE': 'paper',
   'NIFTY_LAB_ROOT': '/root/Options-Nifty-Edge-Lab',
   'BN_LAB_ROOT': '/root/Options-Edge-Lab',
-  'NIFTY_CONFIG': 'config/rungs/paper_2l_nifty_tier2_recommended.yaml',
-  'BN_CONFIG': 'config/edge_book_2l_dd20.yaml',
+  'NIFTY_CONFIG': 'config/rungs/nifty_alpha.yaml',
+  'BN_CONFIG': 'config/rungs/bn_alpha.yaml',
   'LIVE_NIFTY': '0',
   'LIVE_BANKNIFTY': '0',
 }})

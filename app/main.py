@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -9,7 +12,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -25,6 +28,8 @@ from app.research import g5 as research_g5
 from app.research import oos as research_oos
 from app.research import scale as research_scale
 from app.research import stable as research_stable
+from app.research import tape_sync as research_tape_sync
+from app.research import variant_ledger as research_ledger
 from app.runners.state import RUNNER, _now
 from app.schemas.envelope import err, ok
 from app.session import market_session, session_day
@@ -110,6 +115,18 @@ async def _lab_journal_keeper() -> None:
         await asyncio.sleep(180.0)
 
 
+async def _lake_ingest_keeper() -> None:
+    """After cash close (and Monday catch-up): Dhan charts → both lab data lakes."""
+    from app import lake_ingest
+
+    while True:
+        try:
+            await asyncio.to_thread(lake_ingest.tick)
+        except Exception:
+            pass
+        await asyncio.sleep(180.0)
+
+
 async def _paper_archive_keeper() -> None:
     """Overwrite IST-day snapshot while paper/live is armed so VPS disk stays current."""
     from app import paper_archive
@@ -176,6 +193,7 @@ async def lifespan(_app: FastAPI):
     sched_task = asyncio.create_task(_paper_session_keeper())
     archive_task = asyncio.create_task(_paper_archive_keeper())
     lab_task = asyncio.create_task(_lab_journal_keeper())
+    lake_task = asyncio.create_task(_lake_ingest_keeper())
     from app.execution.runner import EXECUTION
 
     exec_task = asyncio.create_task(EXECUTION.keeper())
@@ -192,7 +210,17 @@ async def lifespan(_app: FastAPI):
             await asyncio.to_thread(paper_archive.capture, reason="shutdown")
     except Exception:
         pass
-    for task in (token_task, mock_task, auto_task, sched_task, archive_task, lab_task, exec_task, wire_task):
+    for task in (
+        token_task,
+        mock_task,
+        auto_task,
+        sched_task,
+        archive_task,
+        lab_task,
+        lake_task,
+        exec_task,
+        wire_task,
+    ):
         task.cancel()
         try:
             await task
@@ -200,7 +228,18 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="Options Edge Desk", version="0.2.0", lifespan=lifespan)
+def _openapi_enabled() -> bool:
+    return os.environ.get("DESK_OPENAPI", "0").strip().lower() in ("1", "true", "yes")
+
+
+app = FastAPI(
+    title="Options Edge Desk",
+    version="0.2.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _openapi_enabled() else None,
+    redoc_url="/redoc" if _openapi_enabled() else None,
+    openapi_url="/openapi.json" if _openapi_enabled() else None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allowed_origins(),
@@ -208,6 +247,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_key_before_body(request, call_next):
+    """401 /api/v1 before Pydantic, so missing JSON cannot skip the key."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path or ""
+    if path.startswith("/api/v1/"):
+        from app.auth import http_client_authorized
+
+        if not http_client_authorized(
+            request.headers.get("x-api-key") or "",
+            request.headers.get("x-desk-bff") or "",
+        ):
+            return JSONResponse(
+                status_code=401,
+                content=err("invalid or missing API key", code="unauthorized"),
+            )
+    return await call_next(request)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -224,12 +283,22 @@ async def validation_handler(_request, exc: RequestValidationError):
     return JSONResponse(status_code=400, content=err(str(exc.errors()), code="invalid_request"))
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    if isinstance(exc, StarletteHTTPException):
+        return await http_exception_handler(request, exc)
+    if isinstance(exc, RequestValidationError):
+        return await validation_handler(request, exc)
+    return JSONResponse(status_code=500, content=err("internal error", code="error"))
+
+
 def _books() -> List[books.BookPaths]:
-    s = get_settings()
-    return [
-        books.nifty_book(s.nifty_lab_root, s.nifty_config),
-        books.bn_book(s.bn_lab_root, s.bn_config),
-    ]
+    return books.desk_books()
+
+
+def _home_books() -> List[books.BookPaths]:
+    """Paper Home: four research packs. Mock and live keep two wallets."""
+    return _books()
 
 
 def _active_trigger() -> Dict[str, Any]:
@@ -299,6 +368,7 @@ def health_tick_payload() -> Dict[str, Any]:
         "paper_saved",
         "live_enabled",
         "lab_journal",
+        "lake_ingest",
     )}
     trig = _active_trigger()
     data["trigger"] = trig
@@ -306,7 +376,28 @@ def health_tick_payload() -> Dict[str, Any]:
     return data
 
 
+_STATUS_LOCK = threading.Lock()
+_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
 def desk_status_payload() -> Dict[str, Any]:
+    """Home/status snapshot. 1s cache so concurrent UI polls do not stampede Dhan."""
+    now = time.time()
+    cached = _STATUS_CACHE.get("data")
+    if cached is not None and now - float(_STATUS_CACHE.get("at") or 0) < 1.0:
+        return cached
+    with _STATUS_LOCK:
+        now = time.time()
+        cached = _STATUS_CACHE.get("data")
+        if cached is not None and now - float(_STATUS_CACHE.get("at") or 0) < 1.0:
+            return cached
+        data = _desk_status_payload_fresh()
+        _STATUS_CACHE["at"] = time.time()
+        _STATUS_CACHE["data"] = data
+        return data
+
+
+def _desk_status_payload_fresh() -> Dict[str, Any]:
     """Flat MVP snapshot — Home banners, tape, books."""
     mode = (RUNNER.mode or "paper").lower()
     if mode not in ("paper", "live", "mock"):
@@ -337,6 +428,12 @@ def desk_status_payload() -> Dict[str, Any]:
         base["lab_journal"] = lab_sync.status()
     except Exception:
         base["lab_journal"] = None
+    try:
+        from app import lake_ingest
+
+        base["lake_ingest"] = lake_ingest.status()
+    except Exception:
+        base["lake_ingest"] = None
     base["live_enabled"] = bool(get_settings().live_enabled)
     if mode == "mock" and MOCK.loaded:
         extra = MOCK.status_fields()
@@ -367,7 +464,7 @@ def desk_status_payload() -> Dict[str, Any]:
     compass = _signals_payload()
     realized = float(blotter.get("total_realized_pnl") or 0)
     today_net = round(realized + unreal, 2)
-    book_rows = books.books_snapshot(_books(), position_rows=pos_rows)
+    book_rows = books.books_snapshot(_home_books(), position_rows=pos_rows)
     try:
         from app.mark_stream import sync_rows
 
@@ -400,7 +497,7 @@ def desk_status_payload() -> Dict[str, Any]:
         "today_net": today_net,
         "last_sync_at": RUNNER.last_sync_at,
         "books": book_rows,
-        "paper_auto": bool(schedule_wanted() and (RUNNER.execution or "") == "auto"),
+        "paper_auto": bool(schedule_wanted()) and mode != "mock",
         "signals_today": int(compass.get("count") or 0),
         "trades_today": int(blotter.get("closed_count") or 0),
         "log_events_today": count_today(),
@@ -470,33 +567,9 @@ def health_full_payload() -> Dict[str, Any]:
 def _positions_payload() -> Dict[str, Any]:
     if _mock_on():
         return MOCK.exclusive_sync(MOCK.ledger.positions_grid)
-    from app.books.live_cutover import book_uses_dhan
     from app import paper_oms
 
-    book_list = _books()
-    dhan_unds = {b.name for b in book_list if book_uses_dhan(b.name, b)}
-    dhan_rows: list = []
-    detail = None
-    if dhan_unds:
-        try:
-            grid = dhan.positions_grid()
-            dhan_rows = list(grid.get("rows") or [])
-        except Exception as exc:  # noqa: BLE001
-            detail = str(exc)[:240]
-            from app import paper_archive
-
-            arch = paper_archive.load()
-            saved = (arch or {}).get("positions")
-            if isinstance(saved, dict):
-                dhan_rows = list(saved.get("rows") or [])
-    paper_rows = list((paper_oms.positions_grid().get("rows") or []))
-    rows = paper_oms.merge_position_rows(dhan_rows, paper_rows, dhan_underlyings=dhan_unds)
-    return {
-        "rows": rows,
-        "row_count": len(rows),
-        "snapshot_at": _now(),
-        "detail": detail,
-    }
+    return paper_oms.desk_positions(_books())
 
 
 def _orders_payload() -> Dict[str, Any]:
@@ -573,6 +646,8 @@ def research_stable_catalog(_: None = Depends(require_api_key)):
         research_stable.stable_catalog(
             nifty_root=s.nifty_lab_root,
             bn_root=s.bn_lab_root,
+            nifty_config=s.nifty_config,
+            bn_config=s.bn_config,
         )
     )
 
@@ -590,6 +665,102 @@ def research_stable_book(underlying: str, _: None = Depends(require_api_key)):
     except KeyError as exc:
         return ok({"error": str(exc), "underlying": underlying})
     return ok(payload)
+
+
+@app.get("/api/v1/desk/research/variant-summary")
+def research_variant_summary(
+    pack_id: str = Query(..., description="Paper variant pack_id"),
+    source: str = Query("locked", description="locked | paper | live"),
+    from_day: Optional[str] = Query(None, alias="from"),
+    to_day: Optional[str] = Query(None, alias="to"),
+    _: None = Depends(require_api_key),
+):
+    """KPI card for one Primary/Secondary variant. Locked 60m or paper/live blotter."""
+    return ok(
+        research_ledger.variant_summary(
+            pack_id=pack_id,
+            source=source,
+            from_day=from_day,
+            to_day=to_day,
+        )
+    )
+
+
+@app.get("/api/v1/desk/research/variant-trades")
+def research_variant_trades(
+    pack_id: str = Query(..., description="Paper variant pack_id"),
+    source: str = Query("locked", description="locked | paper | live"),
+    from_day: Optional[str] = Query(None, alias="from"),
+    to_day: Optional[str] = Query(None, alias="to"),
+    fmt: Optional[str] = Query(None, alias="format"),
+    _: None = Depends(require_api_key),
+):
+    """Trade rows for one variant. Same shape as /trades/history. format=csv for download."""
+    payload = research_ledger.variant_trades(
+        pack_id=pack_id,
+        source=source,
+        from_day=from_day,
+        to_day=to_day,
+    )
+    if str(fmt or "").lower() == "csv":
+        label = str(payload.get("label") or pack_id).replace(" ", "-").lower()
+        src = str(payload.get("source") or source)
+        name = f"{label}-{src}.csv"
+        return Response(
+            content=research_ledger.to_csv(list(payload.get("trades") or [])),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+    return ok(payload)
+
+
+class VariantSyncBody(BaseModel):
+    pack_id: str = Field(..., description="Paper variant pack_id")
+    to_day: Optional[str] = Field(None, description="Inclusive IST day to sync through")
+
+
+@app.post("/api/v1/desk/research/variant-sync")
+def research_variant_sync(body: VariantSyncBody, _: None = Depends(require_api_key)):
+    """Backtest missing days after last tape day through a closed session (not already synced)."""
+    return ok(research_tape_sync.start_sync(body.pack_id, to_day=body.to_day))
+
+
+@app.get("/api/v1/desk/research/lake-status")
+def research_lake_status(_: None = Depends(require_api_key)):
+    """Last EOD Dhan→lake ingest and download caps. Does not call Dhan."""
+    from app import lake_ingest
+
+    return ok(lake_ingest.status())
+
+
+@app.get("/api/v1/desk/research/lake-download")
+def research_lake_download(
+    underlying: str = Query("NIFTY"),
+    kind: str = Query("spot"),
+    from_day: str = Query(..., alias="from"),
+    to_day: str = Query(..., alias="to"),
+    _: None = Depends(require_api_key),
+):
+    """CSV/zip of days already in the lab lake. Does not call Dhan."""
+    from app import lake_ingest
+
+    try:
+        body, name, media = lake_ingest.export_file(
+            underlying=underlying,
+            kind=kind,
+            from_day=from_day,
+            to_day=to_day,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=err(str(exc), code="invalid_request"))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=err(str(exc)[:240], code="error"))
+    safe = name.replace('"', "")
+    return Response(
+        content=body,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
 
 
 @app.get("/api/v1/desk/research/g5")
@@ -947,6 +1118,47 @@ def trades_history(
     )
 
 
+@app.get("/api/v1/desk/trades/export")
+def trades_export(
+    from_day: str = Query(..., alias="from"),
+    to_day: Optional[str] = Query(None, alias="to"),
+    pack_id: Optional[str] = Query(None),
+    _: None = Depends(require_api_key),
+):
+    """CSV of paper/live blotter (or one variant). Desk ledger — not a Dhan export."""
+    from datetime import date as _date, timedelta
+
+    if pack_id:
+        payload = research_ledger.variant_trades(
+            pack_id=pack_id,
+            source="paper",
+            from_day=from_day,
+            to_day=to_day,
+        )
+        trades = list(payload.get("trades") or [])
+        name = f"{str(payload.get('label') or pack_id).replace(' ', '-').lower()}-paper.csv"
+    else:
+        try:
+            start = _date.fromisoformat(from_day)
+            end = _date.fromisoformat(to_day) if to_day else session_day()
+        except ValueError:
+            start = session_day()
+            end = start
+        if end < start:
+            start, end = end, start
+        trades = []
+        day = start
+        while day <= end:
+            trades.extend(list(_trades_payload(day.isoformat()).get("trades") or []))
+            day += timedelta(days=1)
+        name = f"trades-{start.isoformat()}-{end.isoformat()}.csv"
+    return Response(
+        content=research_ledger.to_csv(trades),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/api/v1/desk/signals/today")
 def signals_today(
     day: Optional[str] = Query(None, description="IST calendar day YYYY-MM-DD; default today"),
@@ -1096,6 +1308,7 @@ def quotes_spot(_: None = Depends(require_api_key)):
 def gates(
     underlying: str = Query(...),
     sleeve: Optional[str] = Query(None),
+    pack_id: Optional[str] = Query(None),
     _: None = Depends(require_api_key),
 ):
     und = underlying.upper()
@@ -1105,7 +1318,7 @@ def gates(
             sl = sleeve.lower()
             payload["sleeves"] = [s for s in payload["sleeves"] if s["sleeve"] == sl] or payload["sleeves"]
         return ok(payload)
-    book = books.book_by_underlying(_books(), und)
+    book = books.book_for_place(_books(), und, pack_id)
     lot = default_lot_size(und) if und in ("NIFTY", "BANKNIFTY") else 1
     if book is None:
         return ok(
@@ -1309,7 +1522,7 @@ def kill_set(body: KillBody, _: None = Depends(require_api_key)):
 
 @app.get("/api/v1/desk/safety/circuit-breaker")
 def circuit_get(_: None = Depends(require_api_key)):
-    return ok(books.circuit_from_books(_books()))
+    return ok(books.circuit_from_books(_home_books()))
 
 
 @app.get("/api/v1/desk/safety/shadow-book")
@@ -1319,7 +1532,7 @@ def shadow_get(_: None = Depends(require_api_key)):
 
 @app.get("/api/v1/desk/system/token")
 def token_get(_: None = Depends(require_api_key)):
-    return ok(dhan.token_status())
+    return ok(dhan.token_public_view())
 
 
 class TokenBody(BaseModel):
@@ -1367,11 +1580,13 @@ def token_set(body: TokenBody, _: None = Depends(require_api_key)):
         bits.append("TOTP credentials")
     what = " + ".join(bits) or "settings"
     return ok(
-        {
-            **st,
-            "auto": auto,
-            "message": f"Saved {what} to desk .env on this host; auto-renew/TOTP will keep tokens fresh",
-        }
+        dhan.token_public_view(
+            {
+                **st,
+                "auto": auto,
+                "message": f"Saved {what} to desk .env on this host; auto-renew/TOTP will keep tokens fresh",
+            }
+        )
     )
 
 
@@ -1381,9 +1596,9 @@ def token_renew(_: None = Depends(require_api_key)):
         result = dhan.ensure_fresh_token(renew_if_within_sec=23 * 3600)
         st = dhan.token_status()
         RUNNER.audit_event("token.renew_manual", **{k: v for k, v in result.items() if k != "raw_keys"})
-        return ok({**st, "auto": result, "message": result.get("action")})
+        return ok(dhan.token_public_view({**st, "auto": result, "message": result.get("action")}))
     except Exception as exc:  # noqa: BLE001
-        return ok({"token_ok": False, "message": str(exc), **dhan.token_status()})
+        return ok(dhan.token_public_view({"token_ok": False, "message": str(exc)[:240], **dhan.token_status()}))
 
 
 @app.get("/api/v1/desk/audit/tail")
@@ -1422,6 +1637,7 @@ class PaperOrderBody(BaseModel):
     price_tolerance: Optional[float] = 0.5
     operator_id: str = "ui"
     trace_id: Optional[str] = None
+    pack_id: Optional[str] = None
 
 
 @app.post("/api/v1/desk/orders/paper")

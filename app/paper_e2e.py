@@ -18,11 +18,7 @@ from app.session import session_day
 
 
 def _books():
-    s = get_settings()
-    return [
-        books.nifty_book(s.nifty_lab_root, s.nifty_config),
-        books.bn_book(s.bn_lab_root, s.bn_config),
-    ]
+    return books.desk_books()
 
 
 def lake_probe(day: str) -> Dict[str, Any]:

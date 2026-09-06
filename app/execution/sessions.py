@@ -1,4 +1,4 @@
-"""Managed session registry + partial-fill SL/TP sizing + OCO."""
+"""Managed session registry + partial-fill SL/TP sizing + OCO + trailing stop."""
 from __future__ import annotations
 
 import threading
@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from app.brokers.dhan import client as dhan
 from app.execution.config import ARMOR
+from app.execution.trail import effective_stop_px, sl_trigger_from_stop
 from app.execution.types import DhanOrderStatus, DhanOrderUpdate, ManagedSession, SessionState
 
 _lock = threading.Lock()
@@ -73,16 +74,36 @@ def _cancel_leg(order_id: str, registry: Dict[str, ManagedSession]) -> None:
         registry.pop(order_id, None)
 
 
-def _place_sl(session: ManagedSession, qty: int, avg_px: float) -> None:
+def _stop_px(session: ManagedSession, avg_px: float, mark_px: float) -> float:
+    peak = max(float(session.peak_px or 0.0), float(mark_px or 0.0), float(avg_px or 0.0))
+    session.peak_px = peak
+    return effective_stop_px(
+        entry_px=float(avg_px),
+        peak_px=peak,
+        stop_pct=float(session.stop_pct),
+        trail_pct=float(session.trail_pct),
+        trail_activate_pct=float(session.trail_activate_pct),
+    )
+
+
+def _place_sl(session: ManagedSession, qty: int, avg_px: float, *, mark_px: float = 0.0) -> None:
     if qty <= 0 or avg_px <= 0 or not ARMOR.attach_exchange_sl:
         return
+    stop_px = _stop_px(session, avg_px, mark_px or avg_px)
+    session.current_stop_px = stop_px
+    trigger = sl_trigger_from_stop(stop_px, ARMOR.tick_size)
     if session.sl_order_id and session.filled_qty == qty:
-        return
+        if abs(float(session.meta.get("sl_trigger_px") or 0.0) - trigger) < ARMOR.tick_size:
+            return
     if session.sl_order_id:
-        _cancel_leg(session.sl_order_id, _by_sl)
-        session.sl_order_id = ""
-    stop_px = avg_px * (1.0 - session.stop_pct)
-    trigger = round(stop_px + ARMOR.tick_size, 2)
+        try:
+            dhan.modify_sl_trigger(session.sl_order_id, quantity=int(qty), trigger_price=trigger)
+            session.meta["sl_trigger_px"] = trigger
+            session.state = SessionState.PROTECT_WORKING
+            return
+        except Exception:
+            _cancel_leg(session.sl_order_id, _by_sl)
+            session.sl_order_id = ""
     cid = f"sl{session.client_order_id[-12:]}"[:30]
     raw = dhan.place_sl_market(
         security_id=session.security_id,
@@ -95,6 +116,7 @@ def _place_sl(session: ManagedSession, qty: int, avg_px: float) -> None:
     if isinstance(inner, dict):
         oid = str(inner.get("orderId") or inner.get("order_id") or "")
     session.sl_order_id = oid
+    session.meta["sl_trigger_px"] = trigger
     session.state = SessionState.PROTECT_WORKING
     with _lock:
         if oid:
@@ -128,14 +150,47 @@ def _place_tp(session: ManagedSession, qty: int, avg_px: float) -> None:
             _by_tp[oid] = session
 
 
-def sync_protective_legs(session: ManagedSession, qty: int, avg_px: float) -> None:
-    """Place/resize exchange SL + TP for filled qty."""
-    _place_sl(session, qty, avg_px)
+def sync_protective_legs(session: ManagedSession, qty: int, avg_px: float, *, mark_px: float = 0.0) -> None:
+    _place_sl(session, qty, avg_px, mark_px=mark_px)
     _place_tp(session, qty, avg_px)
 
 
+def maybe_trail_stop(session: ManagedSession, ltp: float) -> bool:
+    """Raise exchange SL when trail tightens. Returns True if SL modified."""
+    if float(session.trail_pct) <= 0 or session.filled_qty <= 0 or session.avg_entry_px <= 0:
+        return False
+    if session.state not in (SessionState.IN_POSITION, SessionState.PROTECT_WORKING, SessionState.ENTRY_FILLED):
+        return False
+    if not session.sl_order_id:
+        return False
+    prev = float(session.current_stop_px or 0.0)
+    stop_px = _stop_px(session, session.avg_entry_px, ltp)
+    if stop_px <= prev + ARMOR.tick_size * 0.5:
+        return False
+    _place_sl(session, session.filled_qty, session.avg_entry_px, mark_px=ltp)
+    return float(session.current_stop_px or 0.0) > prev + 1e-9
+
+
+def trail_open_sessions(security_id: str, ltp: float) -> int:
+    if ltp <= 0:
+        return 0
+    n = 0
+    for session in all_open():
+        if str(session.security_id) != str(security_id):
+            continue
+        if maybe_trail_stop(session, ltp):
+            n += 1
+    try:
+        from app.paper_protect import on_mark
+
+        if on_mark(security_id, ltp):
+            n += 1
+    except Exception:
+        pass
+    return n
+
+
 def _close_oco(session: ManagedSession, winner: str) -> None:
-    """Cancel the other protective leg after SL or TP fills."""
     session.exit_reason = winner
     if winner == "sl" and session.tp_order_id:
         _cancel_leg(session.tp_order_id, _by_tp)
@@ -147,7 +202,6 @@ def _close_oco(session: ManagedSession, winner: str) -> None:
 
 
 def handle_order_update(upd: DhanOrderUpdate) -> Optional[ManagedSession]:
-    """Apply Dhan WS/REST update; resize SL/TP on partial fill; OCO on exit."""
     session = lookup(order_id=upd.order_id, correlation_id=upd.correlation_id)
     if not session:
         return None
@@ -156,7 +210,12 @@ def handle_order_update(upd: DhanOrderUpdate) -> Optional[ManagedSession]:
 
     if session.sl_order_id and upd.order_id == session.sl_order_id:
         if upd.status == DhanOrderStatus.TRADED:
-            _close_oco(session, "sl")
+            reason = "sl"
+            if float(session.trail_pct) > 0 and float(session.current_stop_px or 0.0) > (
+                session.avg_entry_px * (1.0 - session.stop_pct) + 1e-9
+            ):
+                reason = "trail_stop"
+            _close_oco(session, reason)
         elif upd.status == DhanOrderStatus.REJECTED:
             session.state = SessionState.ERROR
             session.error = "sl_rejected"

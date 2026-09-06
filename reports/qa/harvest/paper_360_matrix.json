@@ -1,0 +1,31 @@
+{
+  "live": "off until G5 fills + forensics + written model pick",
+  "happy": [
+    "buy fills desk_paper OMS",
+    "sell closes round",
+    "dry_run no fill",
+    "idempotent trace",
+    "Nifty fade allow / ORB deny",
+    "BN fade+ORB allow"
+  ],
+  "edge": [
+    "G5=20 still paper if DESK_LIVE_ENABLED=0",
+    "G5=19 + live flags still paper",
+    "lots exceed gate",
+    "auto tick noop in manual"
+  ],
+  "negative": [
+    "401 without key",
+    "TRADING_STOPPED",
+    "KILL_SWITCH",
+    "MARKET_CLOSED",
+    "LIVE_DISABLED",
+    "SHADOW_HALTED",
+    "GATE_DENY",
+    "BROKER_UNREACHABLE",
+    "PRICE_MOVED",
+    "NO_POSITION",
+    "virtual_paper not G5",
+    "live auto noop when live off"
+  ]
+}

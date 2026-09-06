@@ -1,0 +1,79 @@
+{
+  "pack": "bn_alpha",
+  "config": "config/rungs/bn_alpha.yaml",
+  "span": "2021-07-01\u21922026-06-30",
+  "elapsed_s": 1053.9,
+  "got": {
+    "return_pct": 416.17,
+    "peak_dd_pct": 18.26,
+    "net_pnl_inr": 832346.0,
+    "calmar": 22.791,
+    "n_trades": 530,
+    "fade_pnl_inr": 861889.0,
+    "orb_pnl_inr": -29544.0,
+    "holdout_return_pct": 28.02,
+    "holdout_peak_dd_pct": 28.09,
+    "march_2026_return_pct": -13.64
+  },
+  "snapshot": {
+    "return_pct": 416.17,
+    "peak_dd_pct": 18.26,
+    "net_pnl_inr": 832346,
+    "n_trades": 530,
+    "holdout_return_pct": 28.02,
+    "holdout_peak_dd_pct": 28.09,
+    "march_2026_return_pct": -13.64
+  },
+  "diffs": [
+    {
+      "key": "return_pct",
+      "expected": 416.17,
+      "got": 416.17,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "peak_dd_pct",
+      "expected": 18.26,
+      "got": 18.26,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "net_pnl_inr",
+      "expected": 832346.0,
+      "got": 832346.0,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "n_trades",
+      "expected": 530.0,
+      "got": 530,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "holdout_return_pct",
+      "expected": 28.02,
+      "got": 28.02,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "holdout_peak_dd_pct",
+      "expected": 28.09,
+      "got": 28.09,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "march_2026_return_pct",
+      "expected": -13.64,
+      "got": -13.64,
+      "delta": 0.0,
+      "ok": true
+    }
+  ],
+  "match": true
+}

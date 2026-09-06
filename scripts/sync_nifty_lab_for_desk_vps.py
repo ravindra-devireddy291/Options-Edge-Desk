@@ -14,6 +14,8 @@ NIFTY = "/root/Options-Nifty-Edge-Lab"
 LOCAL = Path(r"D:\Options-Nifty-Edge-Lab")
 
 FILES = [
+    "config/rungs/nifty_alpha.yaml",
+    "config/rungs/nifty_stable.yaml",
     "config/rungs/paper_2l_nifty_tier2_recommended.yaml",
     "config/rungs/paper_2l_nifty_tier1_conservative.yaml",
     "edge_lab/risk/execution_brakes.py",

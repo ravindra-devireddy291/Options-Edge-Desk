@@ -47,7 +47,7 @@ def main() -> int:
         return 1
 
     # shadow writeback smoke
-    bn = books.bn_book(Path(r"D:\Options-Edge-Lab"), "config/edge_book_2l_dd20.yaml")
+    bn = books.bn_book(Path(r"D:\Options-Edge-Lab"), "config/rungs/bn_alpha.yaml")
     order = {
         "client_order_id": "smoke-test",
         "side": "BUY",

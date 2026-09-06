@@ -1,0 +1,69 @@
+{
+  "pack": "nifty_alpha",
+  "config": "config/rungs/nifty_alpha.yaml",
+  "span": "2021-07-01\u21922026-06-30",
+  "elapsed_s": 924.2,
+  "got": {
+    "return_pct": 256.49,
+    "peak_dd_pct": 23.27,
+    "net_pnl_inr": 512983.0,
+    "calmar": 11.022,
+    "n_trades": 241,
+    "holdout_return_pct": 114.81,
+    "holdout_peak_dd_pct": 37.68,
+    "march_2026_return_pct": -27.35
+  },
+  "snapshot": {
+    "return_pct": 256.49,
+    "peak_dd_pct": 23.27,
+    "net_pnl_inr": 512983,
+    "n_trades": 241,
+    "holdout_return_pct": 114.81,
+    "holdout_peak_dd_pct": 37.68
+  },
+  "diffs": [
+    {
+      "key": "return_pct",
+      "expected": 256.49,
+      "got": 256.49,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "peak_dd_pct",
+      "expected": 23.27,
+      "got": 23.27,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "net_pnl_inr",
+      "expected": 512983.0,
+      "got": 512983.0,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "n_trades",
+      "expected": 241.0,
+      "got": 241,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "holdout_return_pct",
+      "expected": 114.81,
+      "got": 114.81,
+      "delta": 0.0,
+      "ok": true
+    },
+    {
+      "key": "holdout_peak_dd_pct",
+      "expected": 37.68,
+      "got": 37.68,
+      "delta": 0.0,
+      "ok": true
+    }
+  ],
+  "match": true
+}

@@ -1,0 +1,61 @@
+{
+  "local_healthz": {
+    "n": 200,
+    "ok": 200,
+    "codes": [
+      200
+    ],
+    "p50_ms": 60.6,
+    "p95_ms": 75.1,
+    "max_ms": 86.0,
+    "mean_ms": 59.9
+  },
+  "local_status": {
+    "n": 24,
+    "ok": 24,
+    "codes": [
+      200
+    ],
+    "p50_ms": 24.6,
+    "p95_ms": 7089.1,
+    "max_ms": 7094.6,
+    "mean_ms": 1200.4
+  },
+  "local_snapshot": {
+    "n": 12,
+    "ok": 12,
+    "codes": [
+      200
+    ],
+    "p50_ms": 44.8,
+    "p95_ms": 71.8,
+    "max_ms": 84.9,
+    "mean_ms": 48.0
+  },
+  "public_healthz": {
+    "n": 8,
+    "ok": 0,
+    "p50_ms": 5101.8,
+    "p95_ms": 5108.3,
+    "max_ms": 5108.3
+  },
+  "dhan_probe": {
+    "token_ok": true,
+    "seconds_left": 59913,
+    "spot_ms": 10549.6,
+    "spot_n": true,
+    "spot_bn": true,
+    "scrip_nifty": true,
+    "quote_ms": 115.8,
+    "quote_ltp": false
+  },
+  "listen_8080": "LISTEN 0      2048       127.0.0.1:8080       0.0.0.0:*    users:((\"python\",pid=79162,fd=6))",
+  "docs": 404,
+  "status_no_key": 401,
+  "laptop_public_healthz": {
+    "n": 40,
+    "ok": 40,
+    "p50_ms": 640.0,
+    "p95_ms": 796.0
+  }
+}

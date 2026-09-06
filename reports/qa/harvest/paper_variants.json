@@ -1,0 +1,150 @@
+{
+  "desk_armed": {
+    "NIFTY": "config/rungs/nifty_alpha.yaml",
+    "BANKNIFTY": "config/rungs/bn_alpha.yaml"
+  },
+  "errors": [],
+  "paper_variants": [
+    {
+      "pack_id": "nifty_tier2_recommended",
+      "role": "Nifty Alpha \u00b7 Gate 5 paper",
+      "selection": "primary",
+      "config_rel": "config/rungs/nifty_alpha.yaml",
+      "config_exists": true,
+      "tape_exists": true,
+      "metrics_source": "yaml_snapshot",
+      "tape_stale": true,
+      "paper_armed": true,
+      "allocation": {
+        "capital": 200000.0,
+        "max_lots": 10,
+        "premium_inr": 60000.0,
+        "premium_frac": 0.3,
+        "capital_per_lot": 20000.0,
+        "fade_lots": 10,
+        "orb_lots": 0,
+        "board_id": "F10_CE300_S30_TP50",
+        "status": "client_locked",
+        "config_name": "nifty_alpha"
+      },
+      "metrics": {
+        "return_pct": 256.49,
+        "peak_dd_pct": 23.27,
+        "net_pnl": 512983.0,
+        "n_trades": 241,
+        "start_equity": 200000.0,
+        "end_equity": 712983.0,
+        "win_rate": null,
+        "green_months": null,
+        "n_months": null
+      },
+      "chart_count": 0
+    },
+    {
+      "pack_id": "nifty_ce400_secondary",
+      "role": "Nifty Stable \u00b7 dual-track paper",
+      "selection": "secondary",
+      "config_rel": "config/rungs/nifty_stable.yaml",
+      "config_exists": true,
+      "tape_exists": true,
+      "metrics_source": "tape",
+      "tape_stale": false,
+      "paper_armed": false,
+      "allocation": {
+        "capital": 200000.0,
+        "max_lots": 10,
+        "premium_inr": 60000.0,
+        "premium_frac": 0.3,
+        "capital_per_lot": 20000.0,
+        "fade_lots": 10,
+        "orb_lots": 0,
+        "board_id": "F10_CE400_S30_TP50",
+        "status": "client_locked",
+        "config_name": "nifty_stable"
+      },
+      "metrics": {
+        "return_pct": 289.56,
+        "peak_dd_pct": 22.85,
+        "net_pnl": 579115.84,
+        "n_trades": 248,
+        "start_equity": 200000.0,
+        "end_equity": 779115.84,
+        "win_rate": 0.4314516129032258,
+        "green_months": 0,
+        "n_months": 62,
+        "avg_lots": 10.0
+      },
+      "chart_count": 63
+    },
+    {
+      "pack_id": "bn_f6o3_sm400_mce2",
+      "role": "BN Alpha \u00b7 Gate 5 paper",
+      "selection": "primary",
+      "config_rel": "config/rungs/bn_alpha.yaml",
+      "config_exists": true,
+      "tape_exists": true,
+      "metrics_source": "yaml_snapshot",
+      "tape_stale": true,
+      "paper_armed": true,
+      "allocation": {
+        "capital": 200000.0,
+        "max_lots": 9,
+        "premium_inr": 50000.0,
+        "premium_frac": 0.25,
+        "capital_per_lot": 22222.0,
+        "fade_lots": 6,
+        "orb_lots": 3,
+        "board_id": "B_f6o3_sm400_mce2_TP40_TR2_a20_t20",
+        "status": "client_locked",
+        "config_name": "bn_alpha"
+      },
+      "metrics": {
+        "return_pct": 416.17,
+        "peak_dd_pct": 18.26,
+        "net_pnl": 832346.0,
+        "n_trades": 530,
+        "start_equity": 200000.0,
+        "end_equity": 1032346.0,
+        "win_rate": null,
+        "green_months": null,
+        "n_months": null
+      },
+      "chart_count": 0
+    },
+    {
+      "pack_id": "bn_rs30_tp40_secondary",
+      "role": "BN Stable \u00b7 dual-track paper",
+      "selection": "secondary",
+      "config_rel": "config/rungs/bn_stable.yaml",
+      "config_exists": true,
+      "tape_exists": true,
+      "metrics_source": "yaml_snapshot",
+      "tape_stale": true,
+      "paper_armed": false,
+      "allocation": {
+        "capital": 200000.0,
+        "max_lots": 4,
+        "premium_inr": 50000.0,
+        "premium_frac": 0.25,
+        "capital_per_lot": 50000.0,
+        "fade_lots": 4,
+        "orb_lots": 0,
+        "board_id": "R_s30_tp40_TR2_a20_t20",
+        "status": "client_locked",
+        "config_name": "bn_stable"
+      },
+      "metrics": {
+        "return_pct": 286.79,
+        "peak_dd_pct": 11.12,
+        "net_pnl": 573578.0,
+        "n_trades": 289,
+        "start_equity": 200000.0,
+        "end_equity": 773578.0,
+        "win_rate": null,
+        "green_months": null,
+        "n_months": null
+      },
+      "chart_count": 0
+    }
+  ]
+}

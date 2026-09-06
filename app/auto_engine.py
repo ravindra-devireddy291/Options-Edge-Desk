@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional, Set
 
 from app import triggers as trigger_store
 from app.books import adapters as books
-from app.brokers.dhan import client as dhan
 from app.oms import place_paper
 from app.mock import MOCK
 from app.runners.state import RUNNER
@@ -77,13 +76,7 @@ def reset() -> None:
 
 
 def _books() -> List:
-    from app.auth import get_settings
-
-    s = get_settings()
-    return [
-        books.nifty_book(s.nifty_lab_root, s.nifty_config),
-        books.bn_book(s.bn_lab_root, s.bn_config),
-    ]
+    return books.desk_books()
 
 
 def _notice_from_place(signal: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -132,6 +125,7 @@ def _place_signal(sig: Dict[str, Any], *, side: Optional[str] = None, force_eod:
         operator_id="auto",
         trace_id=f"auto:{sid}",
         force_session_close=force_eod,
+        pack_id=str(sig.get("pack_id") or "") or None,
     )
     return place_paper(body, _books())
 
@@ -155,7 +149,9 @@ def _compass() -> Dict[str, Any]:
 def _positions() -> Dict[str, Any]:
     if (RUNNER.mode or "").lower() == "mock" and MOCK.loaded:
         return MOCK.ledger.positions_grid()
-    return dhan.positions_grid()
+    from app import paper_oms
+
+    return paper_oms.desk_positions(_books())
 
 
 def _signal_due(sig: Dict[str, Any], now) -> bool:
@@ -245,7 +241,7 @@ def tick() -> None:
             continue
         lots = int(row.get("lots") or 0) or 1
         sig = {
-            "signal_id": f"eod-{day}-{row.get('underlying')}-{row.get('symbol')}",
+            "signal_id": f"eod-{day}-{row.get('pack_id') or row.get('underlying')}-{row.get('symbol')}",
             "underlying": row.get("underlying"),
             "sleeve": str(row.get("sleeve") or "fade"),
             "action": "SELL",
@@ -257,6 +253,7 @@ def tick() -> None:
             "expiry": row.get("expiry"),
             "security_id": row.get("security_id"),
             "ltp": row.get("ltp") or row.get("mark_price"),
+            "pack_id": row.get("pack_id"),
         }
         result = _place_signal(sig, side="SELL", force_eod=True)
         if result.get("accepted"):

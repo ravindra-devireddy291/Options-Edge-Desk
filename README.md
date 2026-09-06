@@ -4,7 +4,7 @@ Serves `my-options-trader` contract on port **8080**:
 
 - REST `/api/v1/desk/*` (envelope `{ok, server_time, data}`)
 - WebSocket `/ws/desk` (`health.tick`)
-- Auth: `X-API-Key` / `api_key=` = `DESK_API_KEY`
+- Auth: UI BFF only. HTTP `X-API-Key` + `X-Desk-BFF`. Browsers must not call deskapi.
 
 **UI handshake (endpoints + mock/paper/live):** [docs/UI_COLLAB.md](docs/UI_COLLAB.md). Field freeze: [docs/BACKEND_REQUIREMENTS.md](docs/BACKEND_REQUIREMENTS.md). Shapes: [docs/UI_API_CONTRACT.md](docs/UI_API_CONTRACT.md). Scenario matrix: [docs/MODE_SCENARIO_MATRIX.md](docs/MODE_SCENARIO_MATRIX.md).
 

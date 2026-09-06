@@ -29,12 +29,14 @@ def status() -> Dict[str, Any]:
     return dict(_LAST)
 
 
-def _run_journal(lab_root: Path, config: str, py: str) -> Dict[str, Any]:
+def _run_journal(lab_root: Path, config: str, py: str, *, skip_ingest: bool = False) -> Dict[str, Any]:
     daily = lab_root / "scripts" / "run_shadow_daily.py"
     journal = lab_root / "scripts" / "run_shadow_journal.py"
     day = now_ist().date().isoformat()
     if daily.exists():
         cmd = [py, str(daily), "--day", day, "--config", config, "--skip-sync"]
+        if skip_ingest:
+            cmd.append("--skip-ingest")
     elif journal.exists():
         cmd = [py, str(journal), "--day", day, "--config", config, "--replace"]
     else:
@@ -74,10 +76,18 @@ def tick() -> None:
     venv = Path("/root/Options-Edge-Lab/.venv/bin/python3")
     if venv.exists():
         py = str(venv)
-    books: List[Dict[str, Any]] = [
-        _run_journal(s.nifty_lab_root, s.nifty_config, py),
-        _run_journal(s.bn_lab_root, s.bn_config, py),
-    ]
+    from app.research.stable import PAPER_VARIANTS
+
+    seen_und: set[str] = set()
+    books: List[Dict[str, Any]] = []
+    for pack in PAPER_VARIANTS:
+        root = s.nifty_lab_root if pack.underlying == "NIFTY" else s.bn_lab_root
+        skip_ingest = pack.underlying in seen_und
+        seen_und.add(pack.underlying)
+        row = _run_journal(root, pack.config_rel, py, skip_ingest=skip_ingest)
+        row["pack_id"] = pack.pack_id
+        row["config"] = pack.config_rel
+        books.append(row)
     ok = all(b.get("ok") for b in books)
     _LAST.update(
         {
@@ -87,4 +97,9 @@ def tick() -> None:
             "books": books,
         }
     )
-    RUNNER.audit_event("lab.journal", ok=ok, nifty=books[0].get("ok"), bn=books[1].get("ok"))
+    RUNNER.audit_event(
+        "lab.journal",
+        ok=ok,
+        n=len(books),
+        packs=[b.get("pack_id") for b in books],
+    )

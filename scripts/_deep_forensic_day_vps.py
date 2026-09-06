@@ -129,8 +129,8 @@ def spot_forensics(lab_root, und, min_gap):
 # config thresholds
 sys.path.insert(0, str(NIFTY))
 from edge_lab.risk.execution_brakes import load_book_config, fade_params_from_config, orb_params_from_config
-n_cfg = load_book_config(str(NIFTY / env.get("NIFTY_CONFIG", "config/rungs/paper_2l_nifty_tier2_recommended.yaml")))
-bn_cfg = load_book_config(str(BN / env.get("BN_CONFIG", "config/edge_book_2l_dd20.yaml")))
+n_cfg = load_book_config(str(NIFTY / env.get("NIFTY_CONFIG", "config/rungs/nifty_alpha.yaml")))
+bn_cfg = load_book_config(str(BN / env.get("BN_CONFIG", "config/rungs/bn_alpha.yaml")))
 nf = fade_params_from_config(n_cfg)
 bf = fade_params_from_config(bn_cfg)
 no = orb_params_from_config(n_cfg)

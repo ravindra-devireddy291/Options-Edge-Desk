@@ -1,6 +1,9 @@
 [Unit]
 Description=Options Edge Desk (Dhan FastAPI :8080)
-After=network.target
+After=network-online.target
+Wants=network-online.target
+# Never give up restarting (crash loops still recover)
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -8,9 +11,15 @@ User=root
 WorkingDirectory=/root/Options-Edge-Desk
 EnvironmentFile=/root/Options-Edge-Desk/.env
 Environment=PYTHONPATH=/root/Options-Edge-Desk
+# Clear a stale bind so Restart=always cannot spawn a second uvicorn (errno 98).
+ExecStartPre=-/usr/bin/fuser -k 8080/tcp
 ExecStart=/root/Options-Edge-Lab/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 Restart=always
 RestartSec=3
+KillMode=mixed
+# Soft stop so FastAPI lifespan can snapshot paper
+TimeoutStopSec=30
+KillSignal=SIGTERM
 
 [Install]
 WantedBy=multi-user.target

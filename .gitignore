@@ -8,3 +8,6 @@ __pycache__/
 venv/
 graphify-out/
 .cursor/
+reports/_gemini_pages/
+reports/qa/harvest/*.log
+reports/qa/harvest/*.done

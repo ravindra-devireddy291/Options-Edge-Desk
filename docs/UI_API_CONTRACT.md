@@ -101,7 +101,13 @@ order_status   = broker raw (TRANSIT | PENDING | TRADED | REJECTED | CANCELLED |
 | 9b | `GET` | `/api/v1/desk/signals/rejected` | Decision log (skips / denies) | key |
 | 9c | `GET` | `/api/v1/desk/signals/last-cycle` | Decision log + funnel | key |
 | 10 | `POST` | `/api/v1/desk/sync` | Home broker banner | key |
-| 11 | `GET` | `/api/v1/desk/research/stable` | Lab | key |
+| 11 | `GET` | `/api/v1/desk/research/stable` | Backtest catalog | key |
+| 11b | `GET` | `/api/v1/desk/research/variant-summary?pack_id=&source=&from=&to=` | Backtest KPIs | key |
+| 11c | `GET` | `/api/v1/desk/research/variant-trades?pack_id=&source=&from=&to=` | Backtest trade table (`format=csv` optional) | key |
+| 11d | `POST` | `/api/v1/desk/research/variant-sync` | Fill missing locked-tape days (`pack_id`, optional `to_day`) | key |
+| 11e | `GET` | `/api/v1/desk/research/lake-status` | Last EOD Dhan→lake ingest | key |
+| 11f | `GET` | `/api/v1/desk/research/lake-download?underlying=&kind=&from=&to=` | Download lake CSV/zip (days already stored) | key |
+| 8c | `GET` | `/api/v1/desk/trades/export?from=&to=&pack_id=` | Paper/live CSV (desk ledger, not Dhan) | key |
 | 12 | `GET` | `/api/v1/desk/research/stable/{underlying}` | Lab | key |
 | 12b | `GET` | `/api/v1/desk/research/g5` | Home G5 readiness (not fills today) | key |
 | 12b2 | `GET` | `/api/v1/desk/research/oos` | Lab Trust (train / OOS) | key |
@@ -286,12 +292,12 @@ Home snapshot. Poll this.
 | `today_net` | number | `realized_pnl_today + unrealized_pnl` (idle → `0`) |
 | `execution` | `manual` \| `auto` \| null | Who sends strategy orders. Always send on Start. |
 | `replay` | object \| null | Mock only: `{ day, speed, sim_time, playing }`. Paper/live → `null`. |
-| `paper_auto` | bool | `true` when weekday paper-auto is wanted **and** `execution` is `auto`. False/absent in mock. |
+| `paper_auto` | bool | `true` when `DESK_PAPER_AUTO` (or runner schedule) wants weekday auto-arm. False in mock. |
 | `signals_today` | number | Compass count (paper/live). Mock uses `/signals/today`. |
 | `trades_today` | number | Blotter count (paper/live). |
 | `log_events_today` | number | Audit lines today. Bind on Home/Day. |
 | `last_error` | string \| null | Token / last desk error. Banner only. |
-| `books` | array length 2 | Home sleeve lines; Order gate copy |
+| `books` | array length 4 in paper | Home cards: Nifty/BN × Alpha/Stable. Live/mock: armed configs only. |
 
 Mock `GET /status`: `token_ok` is `true` (no Dhan). `market_session` follows **sim clock**. Quotes/PnL are synthetic. Same field names as paper/live.
 
@@ -1321,6 +1327,23 @@ Locked catalog. Server picks lowest peak DD. UI does not pick the pack.
 `avg_lots` is omitted when the tape has no lots — hide that clause.
 
 Assumptions line is copy-only on the client. No extra endpoint.
+
+**Additive (paper research board):** `paper_variants[]` — four locked paper configs (Nifty Alpha + Nifty Stable, BN Alpha + BN Stable). Each row has `pack_id` (stable ids: `nifty_tier2_recommended`, `nifty_ce400_secondary`, `bn_f6o3_sm400_mce2`, `bn_rs30_tp40_secondary`; aliases `nifty_alpha` / `nifty_stable` / `bn_alpha` / `bn_stable`), `role`, `selection` (`primary` \| `secondary`), `paper_armed` (true when this YAML is `NIFTY_CONFIG` / `BN_CONFIG`, including old alias paths), `allocation` (`capital`, `max_lots`, `premium_inr`, `premium_frac`, `fade_lots`, `orb_lots`), `metrics`, `metrics_source` (`tape` \| `yaml_snapshot`). Stale tapes that disagree with YAML snapshot by >15pp return or >5pp peak DD (`tape_stale: true`) drop the curve. Missing tapes do **not** invent equity curves (`chart.points` empty). `desk_armed` echoes the two configs the desk tape actually runs. Home `books[].config` is the basename of the armed YAML. Home labels are **Alpha / Stable**, not Primary / Secondary.
+
+Live still uses two books. **Backtest** (`/backtest`) shows all four variants. Do not copy desk-tape PnL onto an unarmed variant.
+
+### `GET /research/variant-summary` and `/research/variant-trades`
+
+Query: `pack_id` (required), `source=locked|paper|live`, `from`, `to` (IST days).
+
+- `locked` — 60-month tape rows, same blotter shape as `/trades/history`. Peak DD in the summary is **₹ and percent points** (e.g. 23.27% of ₹2L ≈ ₹46,540).
+- Backtest page is **locked tape only**. Paper/live source chips are not on this route.
+- `POST /research/variant-sync` `{pack_id, to_day?}` starts a lab replay from the day after `tape_last_day` through a **closed** session. `to_day` cannot be in the existing tape, cannot be in the future, and cannot be today while cash is open (before 15:30 IST). Returns immediately; poll variant-summary `sync_status`. Peak DD on Backtest is **month-end vs ₹2L start**, not the daily trade path.
+- `GET /research/lake-status` — last EOD ingest (`last_ok_day`, `behind`, `data_plan`). Keeper runs after 15:35 IST and catches up missed weekdays (cap 10). Needs TOTP (or a live access token) **and** Dhan Data API `dataPlan=Active`.
+- `GET /research/lake-download?underlying=NIFTY|BANKNIFTY|ALL&kind=spot|options|both&from=&to=` returns CSV or zip of **already stored** lake rows (no Dhan call). Caps: 31 calendar days for spot, 7 for options/both. `to` cannot be after `ingest_through`.
+- `format=csv` on variant-trades returns a file. `/trades/export` is the paper/live CSV for the Trades page.
+
+UI labels are **NIFTY Primary** / **Secondary** — never YAML filenames.
 
 ---
 

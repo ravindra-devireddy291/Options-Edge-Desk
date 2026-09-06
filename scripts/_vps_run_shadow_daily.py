@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 
 from edge_lab.dhan_client import load_dotenv
 
-DEFAULT_CONFIG = "config/rungs/paper_2l_nifty_tier2_recommended.yaml"
+DEFAULT_CONFIG = "config/rungs/nifty_alpha.yaml"
 
 
 def _run(cmd: list[str]) -> int:

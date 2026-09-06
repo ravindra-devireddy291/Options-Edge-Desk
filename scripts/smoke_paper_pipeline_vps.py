@@ -28,8 +28,8 @@ for ln in (desk / ".env").read_text().splitlines():
 
 py = "/root/Options-Edge-Lab/.venv/bin/python3"
 books = [
-    ("NIFTY", Path("/root/Options-Nifty-Edge-Lab"), os.environ.get("NIFTY_CONFIG") or "config/rungs/paper_2l_nifty_tier2_recommended.yaml"),
-    ("BANKNIFTY", Path("/root/Options-Edge-Lab"), os.environ.get("BN_CONFIG") or "config/edge_book_2l_dd20.yaml"),
+    ("NIFTY", Path("/root/Options-Nifty-Edge-Lab"), os.environ.get("NIFTY_CONFIG") or "config/rungs/nifty_alpha.yaml"),
+    ("BANKNIFTY", Path("/root/Options-Edge-Lab"), os.environ.get("BN_CONFIG") or "config/rungs/bn_alpha.yaml"),
 ]
 
 def run(lab, cmd, timeout=480):

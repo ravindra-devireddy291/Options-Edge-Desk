@@ -1,0 +1,7 @@
+[Unit]
+Description=Options Edge Desk uptime watchdog (local + public healthz)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/desk-watchdog.sh

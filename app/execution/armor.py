@@ -66,6 +66,8 @@ def place_armed_entry(
     side: str,
     stop_pct: float,
     tp_pct: float,
+    trail_pct: float = 0.0,
+    trail_activate_pct: float = 0.0,
     correlation_id: str,
     client_order_id: str,
     ref_px: Optional[float] = None,
@@ -128,6 +130,8 @@ def place_armed_entry(
         requested_qty=int(quantity),
         stop_pct=float(stop_pct),
         tp_pct=float(tp_pct),
+        trail_pct=float(trail_pct),
+        trail_activate_pct=float(trail_activate_pct),
         limit_px=chase.limit_px,
         pending_entry_qty=int(quantity),
         meta={

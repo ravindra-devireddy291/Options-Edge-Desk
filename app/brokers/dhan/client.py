@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import struct
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -289,6 +290,53 @@ def token_status() -> Dict[str, Any]:
         return {**base, "token_ok": False, "detail": str(exc)}
 
 
+def token_public_view(st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Operator token card: no prefix, no TOTP/PIN, client id last-4 only."""
+    raw = dict(st if st is not None else token_status())
+    client = str(raw.get("api_key") or "")
+    masked = ("••••" + client[-4:]) if len(client) >= 4 else ("••••" if client else "")
+    auto = raw.get("auto")
+    auto_pub: Optional[Dict[str, Any]] = None
+    if isinstance(auto, dict):
+        auto_pub = {
+            "ok": auto.get("ok"),
+            "method": auto.get("method") or auto.get("action"),
+            "action": auto.get("action"),
+            "detail": (str(auto.get("detail") or "")[:240] or None),
+        }
+        auto_pub = {k: v for k, v in auto_pub.items() if v is not None}
+    out = {
+        "broker": raw.get("broker"),
+        "token_ok": bool(raw.get("token_ok")),
+        "has_access_token": bool(raw.get("has_access_token")),
+        "expires_at": raw.get("expires_at"),
+        "seconds_left": raw.get("seconds_left"),
+        "auto_renew_enabled": bool(raw.get("auto_renew_enabled")),
+        "auto_totp_enabled": bool(raw.get("auto_totp_enabled")),
+        "login_url": raw.get("login_url"),
+        "api_key": masked,
+        "detail": raw.get("detail") if not raw.get("token_ok") else None,
+        "message": raw.get("message"),
+    }
+    if auto_pub:
+        out["auto"] = auto_pub
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def data_plan_status() -> Dict[str, Any]:
+    """Dhan Data API subscription (historical/charts). Not the 24h access token."""
+    try:
+        raw = _request("GET", "/profile", retries=1, sleep_s=0.05)
+    except Exception:
+        return {"data_plan": None, "data_validity": None}
+    if not isinstance(raw, dict):
+        return {"data_plan": None, "data_validity": None}
+    return {
+        "data_plan": raw.get("dataPlan"),
+        "data_validity": raw.get("dataValidity"),
+    }
+
+
 def _request(
     method: str,
     path: str,
@@ -357,12 +405,29 @@ def _as_list(raw: Any) -> List[dict]:
     return []
 
 
+_FUND_LOCK = threading.Lock()
+_FUND_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
 def fund_limit() -> Dict[str, Any]:
-    raw = _request("GET", "/fundlimit", sleep_s=0.1)
-    if isinstance(raw, dict):
-        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-        return dict(data or {})
-    return {}
+    now = time.time()
+    cached = _FUND_CACHE.get("data")
+    if cached is not None and now - float(_FUND_CACHE.get("at") or 0) < 5.0:
+        return cached
+    with _FUND_LOCK:
+        now = time.time()
+        cached = _FUND_CACHE.get("data")
+        if cached is not None and now - float(_FUND_CACHE.get("at") or 0) < 5.0:
+            return cached
+        raw = _request("GET", "/fundlimit", sleep_s=0.1)
+        if isinstance(raw, dict):
+            data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+            out = dict(data or {})
+        else:
+            out = {}
+        _FUND_CACHE["at"] = now
+        _FUND_CACHE["data"] = out
+        return out
 
 
 def positions() -> List[dict]:
@@ -525,6 +590,7 @@ def spots() -> Dict[str, Optional[float]]:
     return {"NIFTY": n, "BANKNIFTY": b, "nifty_spot": n, "banknifty_spot": b}
 
 
+_SPOTS_LOCK = threading.Lock()
 _SPOTS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
@@ -533,21 +599,26 @@ def spots_with_change() -> Dict[str, Dict[str, Optional[float]]]:
     cached = _SPOTS_CACHE.get("data")
     if cached is not None and now - float(_SPOTS_CACHE.get("at") or 0) < 5.0:
         return cached
-    out: Dict[str, Dict[str, Optional[float]]] = {
-        "NIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
-        "BANKNIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
-    }
-    for name, sid in (("NIFTY", NIFTY_SECURITY_ID), ("BANKNIFTY", BN_SECURITY_ID)):
-        try:
-            closes, stamps = _index_series(sid)
-        except Exception:
-            continue
-        if not closes:
-            continue
-        out[name] = _spot_move(closes, stamps)
-    _SPOTS_CACHE["at"] = now
-    _SPOTS_CACHE["data"] = out
-    return out
+    with _SPOTS_LOCK:
+        now = time.time()
+        cached = _SPOTS_CACHE.get("data")
+        if cached is not None and now - float(_SPOTS_CACHE.get("at") or 0) < 5.0:
+            return cached
+        out: Dict[str, Dict[str, Optional[float]]] = {
+            "NIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
+            "BANKNIFTY": {"ltp": None, "change_pct": None, "change_pts": None},
+        }
+        for name, sid in (("NIFTY", NIFTY_SECURITY_ID), ("BANKNIFTY", BN_SECURITY_ID)):
+            try:
+                closes, stamps = _index_series(sid)
+            except Exception:
+                continue
+            if not closes:
+                continue
+            out[name] = _spot_move(closes, stamps)
+        _SPOTS_CACHE["at"] = now
+        _SPOTS_CACHE["data"] = out
+        return out
 
 
 def _underlying_from_symbol(sym: str) -> str:
@@ -885,6 +956,27 @@ def modify_order(
     }
     raw = _request("PUT", f"/orders/{order_id}", body, sleep_s=0.15)
     return {"order_id": order_id, "raw": raw}
+
+
+def modify_sl_trigger(
+    order_id: str,
+    *,
+    quantity: int,
+    trigger_price: float,
+) -> Dict[str, Any]:
+    body = {
+        "dhanClientId": credentials()[0],
+        "orderId": str(order_id),
+        "orderType": "STOP_LOSS_MARKET",
+        "legName": "",
+        "quantity": int(quantity),
+        "price": 0.0,
+        "disclosedQuantity": 0,
+        "triggerPrice": float(trigger_price),
+        "validity": "DAY",
+    }
+    raw = _request("PUT", f"/orders/{order_id}", body, sleep_s=0.15)
+    return {"order_id": order_id, "raw": raw, "trigger_price": float(trigger_price)}
 
 
 def place_sl_market(

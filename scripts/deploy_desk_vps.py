@@ -12,13 +12,27 @@ from pathlib import Path
 
 import paramiko
 
+def _load_env() -> None:
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_env()
+
 HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
+PORT = int(os.environ.get("EDGE_VPS_PORT", "443"))
 USER = os.environ.get("EDGE_VPS_USER", "root")
 PASS = os.environ.get("EDGE_VPS_PASS", "")
 if not PASS:
     raise SystemExit("Set EDGE_VPS_PASS")
 
-CHROOT = "/mnt/sys"
+# VPS now boots from a single root disk (no /mnt/sys chroot). Override if needed.
+CHROOT = os.environ.get("EDGE_VPS_CHROOT", "").rstrip("/")
 REMOTE = "/root/Options-Edge-Desk"
 LOCAL = Path(__file__).resolve().parents[1]
 PY = "/root/Options-Edge-Lab/.venv/bin/python3"
@@ -62,7 +76,7 @@ def _discover_py_tree(*roots: str) -> list[str]:
                 continue
             if root in {"app", "tests"} and path.suffix != ".py":
                 continue
-            if root == "deploy" and path.suffix not in {".service", ".conf", ".md"}:
+            if root == "deploy" and path.suffix not in {".service", ".conf", ".md", ".sh", ".timer"}:
                 continue
             out.append(path.relative_to(LOCAL).as_posix())
     return out
@@ -96,9 +110,15 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username=USER, password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
-    run(c, "findmnt /mnt/sys || (mkdir -p /mnt/sys && mount /dev/vdb1 /mnt/sys)")
-    run(c, f"mkdir -p {CHROOT}{REMOTE}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,app/execution,docs,deploy,data/audit,data/paper,data/paper_ledger,scripts,tests}}")
+    c.connect(HOST, port=PORT, username=USER, password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
+    print(f"connected {HOST}:{PORT} chroot={CHROOT or '(none)'}", flush=True)
+    if CHROOT:
+        run(c, f"findmnt {CHROOT} || (mkdir -p {CHROOT} && mount /dev/vdb1 {CHROOT})")
+    root = f"{CHROOT}{REMOTE}"
+    run(
+        c,
+        f"mkdir -p {root}/{{app/brokers/dhan,app/books,app/research,app/runners,app/schemas,app/mock,app/execution,docs,deploy,data/audit,data/paper,data/paper_ledger,scripts,tests}}",
+    )
     run(
         c,
         f"mkdir -p {CHROOT}/root/Options-Nifty-Edge-Lab/reports/shadow "
@@ -112,7 +132,7 @@ def main() -> int:
         if not local.exists():
             print("skip", rel, flush=True)
             continue
-        remote = f"{CHROOT}{REMOTE}/{rel}"
+        remote = f"{root}/{rel}"
         run(c, f"mkdir -p $(dirname {remote})", check=False)
         sftp.put(str(local), remote)
         print("scp", rel, flush=True)
@@ -121,13 +141,13 @@ def main() -> int:
     # ensure .env exists (do not overwrite secrets)
     run(
         c,
-        f"test -f {CHROOT}{REMOTE}/.env || cp {CHROOT}{REMOTE}/.env.example {CHROOT}{REMOTE}/.env",
+        f"test -f {root}/.env || cp {root}/.env.example {root}/.env",
         check=False,
     )
     # merge desk paths + API key; pull Dhan creds from BN lab .env if present
     desk_key = os.environ.get("DESK_API_KEY", "").strip()
     merge_py = r"""
-import os,re
+import os,re,secrets
 from pathlib import Path
 desk=Path('/root/Options-Edge-Desk/.env')
 bn=Path('/root/Options-Edge-Lab/.env')
@@ -140,9 +160,10 @@ want={
  'DESK_MODE':'paper',
  'NIFTY_LAB_ROOT':'/root/Options-Nifty-Edge-Lab',
  'BN_LAB_ROOT':'/root/Options-Edge-Lab',
- 'NIFTY_CONFIG':'config/rungs/paper_2l_nifty_tier2_recommended.yaml',
- 'BN_CONFIG':'config/edge_book_2l_dd20.yaml',
+ 'NIFTY_CONFIG':'config/rungs/nifty_alpha.yaml',
+ 'BN_CONFIG':'config/rungs/bn_alpha.yaml',
  'DESK_PAPER_AUTO': vals.get('DESK_PAPER_AUTO') or '1',
+ 'DESK_PAPER_ONLY': vals.get('DESK_PAPER_ONLY') or '1',
 }
 # Preserve live cutover flags. Default off only when missing — never reset a live enable.
 for k, default in (
@@ -153,6 +174,8 @@ for k, default in (
 ):
     if not vals.get(k):
         want[k] = default
+if not vals.get('DESK_BFF_SECRET'):
+    want['DESK_BFF_SECRET']=secrets.token_urlsafe(32)
 key=os.environ.get('DESK_API_KEY','').strip()
 if key: want['DESK_API_KEY']=key
 elif not vals.get('DESK_API_KEY') or vals.get('DESK_API_KEY') in ('','change-me-desk-api-key'):
@@ -168,25 +191,33 @@ for k,v in vals.items():
 desk.write_text('\n'.join(out)+'\n')
 print('env keys', sorted(vals))
 """
-    # write merge helper then run inside chroot with DESK_API_KEY
+    # write merge helper then run (chroot only if EDGE_VPS_CHROOT set)
     sftp2 = c.open_sftp()
-    helper = f"{CHROOT}{REMOTE}/scripts/_merge_env.py"
+    helper = f"{root}/scripts/_merge_env.py"
     with sftp2.file(helper, "w") as fh:
         fh.write(merge_py)
     sftp2.close()
     env_export = f"DESK_API_KEY={desk_key} " if desk_key else ""
+
+    def _host_or_chroot(inner: str) -> str:
+        if CHROOT:
+            return f"chroot {CHROOT} bash -lc '{inner}'"
+        return f"bash -lc '{inner}'"
+
     run(
         c,
-        f"chroot {CHROOT} bash -lc '{env_export}{PY} {REMOTE}/scripts/_merge_env.py'",
+        _host_or_chroot(f"{env_export}{PY} {REMOTE}/scripts/_merge_env.py"),
         timeout=60,
         check=False,
     )
     run(
         c,
-        f"chroot {CHROOT} bash -lc '{PY} -m pip install -q fastapi uvicorn pyyaml pydantic websockets python-dotenv tzdata'",
+        _host_or_chroot(
+            f"{PY} -m pip install -q fastapi uvicorn pyyaml pydantic websockets python-dotenv tzdata"
+        ),
         timeout=300,
     )
-    # Host systemd unit (chroot has no dbus). SIGTERM so lifespan can snapshot paper.
+    # Host systemd unit. SIGTERM so lifespan can snapshot paper.
     host_unit = run(
         c,
         "test -f /etc/systemd/system/edge-desk.service && echo HAS_HOST_UNIT || true",
@@ -200,7 +231,7 @@ print('env keys', sorted(vals))
             timeout=60,
             check=False,
         )
-    else:
+    elif CHROOT:
         systemd_ok = run(
             c,
             f"chroot {CHROOT} bash -lc 'command -v systemctl >/dev/null && systemctl daemon-reload 2>/dev/null; echo SYSTEMD_OK'",
@@ -209,7 +240,7 @@ print('env keys', sorted(vals))
         if "SYSTEMD_OK" in systemd_ok and "Failed to connect to bus" not in systemd_ok:
             run(
                 c,
-                f"cp {CHROOT}{REMOTE}/deploy/edge-desk.service {CHROOT}/etc/systemd/system/edge-desk.service; "
+                f"cp {root}/deploy/edge-desk.service {CHROOT}/etc/systemd/system/edge-desk.service; "
                 f"chroot {CHROOT} bash -lc 'systemctl daemon-reload; systemctl enable edge-desk; systemctl restart edge-desk; "
                 f"sleep 2; systemctl is-active edge-desk; curl -s http://127.0.0.1:8080/healthz || true'",
                 timeout=120,
@@ -226,7 +257,16 @@ print('env keys', sorted(vals))
                 return run(c, cmd, timeout=timeout, check=False)
 
             restart_desk(_run, desk_key)
-    print(run(c, f"tail -n 30 {CHROOT}{REMOTE}/logs/desk.out 2>/dev/null || true", check=False), flush=True)
+    else:
+        run(
+            c,
+            f"cp {root}/deploy/edge-desk.service /etc/systemd/system/edge-desk.service; "
+            "systemctl daemon-reload; systemctl enable edge-desk; systemctl restart edge-desk; "
+            "sleep 2; systemctl is-active edge-desk; curl -s http://127.0.0.1:8080/healthz || true",
+            timeout=120,
+            check=False,
+        )
+    print(run(c, f"tail -n 30 {root}/logs/desk.out 2>/dev/null || true", check=False), flush=True)
     c.close()
     print("deployed", REMOTE, flush=True)
     return 0

@@ -38,7 +38,7 @@ Stop shipping numbers and controls that lie; pass through risk and research the 
 | U13–U18 | Lab proof + craft + auth honesty | UI | D6–D8 for research |
 | U19–U21 | Orphans, Book defaults, optional Query | UI | after P1 |
 
-**Status (2026-08-27):** Desk **D1–D8 code + contracts + local smoke** done. UI **allowlist + Zod plumbing** done. Remaining: UI **screens** U7–U15. VPS deploy when ready.
+**Status (2026-08-27):** Desk **D1–D8 code + contracts + VPS + tunnel HA** done. UI **U1–U21** done (incl. U12 limit=100, U13 drawdown ribbon).
 
 ---
 

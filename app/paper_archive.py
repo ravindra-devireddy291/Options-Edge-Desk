@@ -62,30 +62,37 @@ def capture(*, reason: str = "tick") -> Optional[Path]:
         return None
 
     from app.auth import get_settings
+    from app import paper_oms
+    from app.books.live_cutover import book_uses_dhan
 
     s = get_settings()
-    book_list = [
-        books.nifty_book(s.nifty_lab_root, s.nifty_config),
-        books.bn_book(s.bn_lab_root, s.bn_config),
-    ]
+    book_list = books.desk_books()
     day = session_day().isoformat()
     trades = books.trades_today(book_list, day)
     signals = books.signals_today(book_list, day)
-    positions: Dict[str, Any] = {"rows": [], "row_count": 0}
-    orders: Dict[str, Any] = {"orders": [], "count": 0}
+    positions = paper_oms.desk_positions(book_list)
+    orders: Dict[str, Any] = dict(paper_oms.open_orders())
     dhan_trades: list = []
-    try:
-        positions = dhan.positions_grid()
-    except Exception as exc:  # noqa: BLE001
-        positions = {"rows": [], "row_count": 0, "detail": str(exc)[:240]}
-    try:
-        orders = dhan.open_orders_response()
-    except Exception as exc:  # noqa: BLE001
-        orders = {"orders": [], "count": 0, "detail": str(exc)[:240]}
-    try:
-        dhan_trades = dhan.trade_book_today()
-    except Exception:
-        dhan_trades = []
+    dhan_unds = {b.name for b in book_list if book_uses_dhan(b.name, b)}
+    if dhan_unds:
+        try:
+            dhan_oo = dhan.open_orders_response()
+            live_orders = [
+                o
+                for o in list((dhan_oo or {}).get("orders") or [])
+                if str(o.get("underlying") or "").upper() in dhan_unds
+            ]
+            orders = {
+                "orders": live_orders,
+                "count": len(live_orders),
+                "snapshot_at": orders.get("snapshot_at"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            orders = {"orders": [], "count": 0, "detail": str(exc)[:240]}
+        try:
+            dhan_trades = dhan.trade_book_today()
+        except Exception:
+            dhan_trades = []
 
     trade_count = int((trades or {}).get("trade_count") or 0)
     signal_count = int((signals or {}).get("count") or 0)

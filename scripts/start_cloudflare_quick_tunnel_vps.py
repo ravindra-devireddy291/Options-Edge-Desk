@@ -9,12 +9,30 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 
 import paramiko
 
 HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
+PORT = int(os.environ.get("EDGE_VPS_PORT", "443"))
 PASS = os.environ.get("EDGE_VPS_PASS", "")
 LOG = "/var/log/cloudflared-quick.log"
+
+
+def load_env() -> None:
+    env = Path(__file__).resolve().parents[1] / ".env"
+    if not env.exists():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_env()
+HOST = os.environ.get("EDGE_VPS_HOST", HOST)
+PORT = int(os.environ.get("EDGE_VPS_PORT", str(PORT)))
+PASS = os.environ.get("EDGE_VPS_PASS", PASS)
 
 
 def run(c, cmd: str, timeout: int = 60) -> tuple[int, str]:
@@ -31,7 +49,7 @@ def main() -> int:
         raise SystemExit("Set EDGE_VPS_PASS")
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username="root", password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
+    c.connect(HOST, port=PORT, username="root", password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
 
     run(c, "ss -ltnp | grep 8080 || echo MISSING_8080")
     run(c, "pkill -f 'cloudflared tunnel --url' || true; sleep 1")

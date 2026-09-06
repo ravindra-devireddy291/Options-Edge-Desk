@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare Tunnel client (options-desk-api → deskapi.ravindra-devireddy.com)
+After=network-online.target edge-desk.service
+Wants=network-online.target
+# Tunnel can start even if desk is briefly restarting
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+TimeoutStartSec=120
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

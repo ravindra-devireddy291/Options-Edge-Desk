@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.auth import get_settings
-from app.books.adapters import BookPaths
+from app.books.adapters import BookPaths, _row_matches_book
 
 G5_TARGET = 20
 # Desk paper OMS fills count toward G5 (same bar as real paper/live fills).
@@ -26,17 +26,17 @@ def _fill_source(bf: Optional[dict]) -> str:
 
 
 def is_g5_fill(bf: Optional[dict]) -> bool:
+    """Only desk/live/dhan fills count. Lab tape with entry+exit must not unlock live."""
     if not bf or not isinstance(bf, dict):
         return False
+    notes = str(bf.get("notes") or "").lower()
     src = _fill_source(bf)
+    blob = f"{src} {notes}"
+    if "virtual" in blob:
+        return False
     if src in G5_SOURCES:
         return True
-    notes = str(bf.get("notes") or "").lower()
-    if src == "virtual_paper" or "virtual" in notes:
-        return False
-    if "paper" in notes or "dhan" in notes or notes in ("live", "manual"):
-        return True
-    return bf.get("entry") is not None and bf.get("exit") is not None and "virtual" not in notes
+    return "desk_paper" in blob or "dhan_tradebook" in blob
 
 
 def g5_sessions(book: BookPaths) -> int:
@@ -57,6 +57,8 @@ def g5_sessions(book: BookPaths) -> int:
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if not _row_matches_book(row, book):
                 continue
             if is_g5_fill(row.get("broker_fill") if isinstance(row.get("broker_fill"), dict) else None):
                 hit = True

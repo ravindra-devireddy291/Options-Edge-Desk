@@ -79,6 +79,10 @@ class ManagedSession:
     requested_qty: int
     stop_pct: float
     tp_pct: float
+    trail_pct: float = 0.0
+    trail_activate_pct: float = 0.0
+    peak_px: float = 0.0
+    current_stop_px: float = 0.0
     entry_order_id: str = ""
     sl_order_id: str = ""
     tp_order_id: str = ""

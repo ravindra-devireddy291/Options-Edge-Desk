@@ -118,8 +118,8 @@ def main() -> int:
             "NIFTY_LAB_ROOT": vals.get("NIFTY_LAB_ROOT") or "D:/Options-Nifty-Edge-Lab",
             "BN_LAB_ROOT": vals.get("BN_LAB_ROOT") or "D:/Options-Edge-Lab",
             "NIFTY_CONFIG": vals.get("NIFTY_CONFIG")
-            or "config/rungs/paper_2l_nifty_tier2_recommended.yaml",
-            "BN_CONFIG": vals.get("BN_CONFIG") or "config/edge_book_2l_dd20.yaml",
+            or "config/rungs/nifty_alpha.yaml",
+            "BN_CONFIG": vals.get("BN_CONFIG") or "config/rungs/bn_alpha.yaml",
             "LIVE_NIFTY": "0",
             "LIVE_BANKNIFTY": "0",
         }
@@ -135,8 +135,8 @@ def main() -> int:
         "DHAN_ACCESS_TOKEN": token,
         "NIFTY_LAB_ROOT": "/root/Options-Nifty-Edge-Lab",
         "BN_LAB_ROOT": "/root/Options-Edge-Lab",
-        "NIFTY_CONFIG": "config/rungs/paper_2l_nifty_tier2_recommended.yaml",
-        "BN_CONFIG": "config/edge_book_2l_dd20.yaml",
+        "NIFTY_CONFIG": "config/rungs/nifty_alpha.yaml",
+        "BN_CONFIG": "config/rungs/bn_alpha.yaml",
         "LIVE_NIFTY": "0",
         "LIVE_BANKNIFTY": "0",
     }

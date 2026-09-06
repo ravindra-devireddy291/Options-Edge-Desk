@@ -477,7 +477,7 @@ class MockEngine:
             mtm = round(sum(float(x.get("unrealized_pnl") or 0) for x in rs), 2)
             lots = int(sum(int(x.get("lots") or 0) for x in rs))
             real = float(self.ledger.realized.get(und) or 0)
-            label = "Rs 1L book" if und == "NIFTY" else "Rs 2L book"
+            label = f"{und} Primary"
             g = self.gates(und)["sleeves"]
             out.append(
                 {

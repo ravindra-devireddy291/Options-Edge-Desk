@@ -1,0 +1,27 @@
+{
+  "target": "inproc TestClient",
+  "healthz": {
+    "n": 160,
+    "ok": 160,
+    "p50_ms": 102.0,
+    "p95_ms": 234.6,
+    "max_ms": 286.9,
+    "mean_ms": 118.8
+  },
+  "status": {
+    "n": 48,
+    "ok": 48,
+    "p50_ms": 157.8,
+    "p95_ms": 561.6,
+    "max_ms": 567.3,
+    "mean_ms": 268.4
+  },
+  "snapshot": {
+    "n": 24,
+    "ok": 24,
+    "p50_ms": 400.2,
+    "p95_ms": 464.4,
+    "max_ms": 470.8,
+    "mean_ms": 356.5
+  }
+}

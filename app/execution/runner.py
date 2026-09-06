@@ -22,6 +22,13 @@ def _on_depth(depth) -> None:
         note_depth(depth)
     except Exception:
         pass
+    try:
+        from app.execution.sessions import trail_open_sessions
+
+        if depth is not None and getattr(depth, "ltp", 0) > 0:
+            trail_open_sessions(str(depth.security_id), float(depth.ltp))
+    except Exception:
+        pass
 
 
 class ExecutionRunner:
@@ -49,6 +56,15 @@ class ExecutionRunner:
             from app.mark_stream import tracked_security_ids
 
             ids.update(tracked_security_ids())
+        except Exception:
+            pass
+        try:
+            from app import paper_oms
+
+            for row in paper_oms.positions_grid().get("rows") or []:
+                sid = str(row.get("security_id") or "").strip()
+                if sid:
+                    ids.add(sid)
         except Exception:
             pass
         out: List[Tuple[str, str]] = [

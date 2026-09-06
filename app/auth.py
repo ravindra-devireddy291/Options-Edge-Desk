@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Header, HTTPException, Query, WebSocket
+from fastapi import Header, HTTPException, WebSocket
 
 
 def _load_dotenv() -> None:
@@ -33,9 +33,9 @@ def _load_dotenv() -> None:
         k, v = k.strip(), v.strip().strip('"').strip("'")
         if not k:
             continue
-        cur = os.environ.get(k)
-        if cur is None or (not cur and v):
-            os.environ[k] = v
+        if k in os.environ:
+            continue
+        os.environ[k] = v
 
 
 @dataclass(frozen=True)
@@ -51,10 +51,24 @@ class Settings:
     live_enabled: bool
     mock_loop: bool
     audit_dir: Path
+    bff_secret: str
+
+
+def _secrets_match(provided: str, expected: str) -> bool:
+    if not provided or not expected:
+        return False
+    a, b = provided.encode("utf-8"), expected.encode("utf-8")
+    if len(a) != len(b):
+        secrets.compare_digest(b, b)
+        return False
+    return secrets.compare_digest(a, b)
 
 
 def cors_allowed_origins() -> list[str]:
-    """Browser origins permitted by CORSMiddleware (comma-separated override in env)."""
+    """Empty when BFF secret is set — browsers must not call deskapi."""
+    _load_dotenv()
+    if (os.environ.get("DESK_BFF_SECRET") or "").strip():
+        return []
     raw = (os.environ.get("CORS_ALLOWED_ORIGINS") or "").strip()
     if raw:
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
@@ -87,30 +101,50 @@ def get_settings() -> Settings:
         nifty_lab_root=Path(os.environ.get("NIFTY_LAB_ROOT") or nifty_default),
         bn_lab_root=Path(os.environ.get("BN_LAB_ROOT") or bn_default),
         nifty_config=os.environ.get("NIFTY_CONFIG")
-        or "config/rungs/paper_2l_nifty_tier2_recommended.yaml",
-        bn_config=os.environ.get("BN_CONFIG") or "config/edge_book_2l_dd20.yaml",
+        or "config/rungs/nifty_alpha.yaml",
+        bn_config=os.environ.get("BN_CONFIG") or "config/rungs/bn_alpha.yaml",
         live_nifty=os.environ.get("LIVE_NIFTY", "0").strip() in ("1", "true", "yes"),
         live_banknifty=os.environ.get("LIVE_BANKNIFTY", "0").strip() in ("1", "true", "yes"),
         live_enabled=os.environ.get("DESK_LIVE_ENABLED", "0").strip().lower() in ("1", "true", "yes"),
         mock_loop=os.environ.get("DESK_MOCK_LOOP", "0").strip().lower() in ("1", "true", "yes"),
         audit_dir=root / "data" / "audit",
+        bff_secret=(os.environ.get("DESK_BFF_SECRET") or "").strip(),
     )
 
 
 def require_api_key(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-    api_key: Optional[str] = Query(default=None),
+    x_desk_bff: Optional[str] = Header(default=None, alias="X-Desk-BFF"),
 ) -> None:
     settings = get_settings()
-    provided = (x_api_key or api_key or "").strip()
-    if not provided or provided != settings.desk_api_key:
+    provided = (x_api_key or "").strip()
+    if not _secrets_match(provided, settings.desk_api_key):
         raise HTTPException(status_code=401, detail="invalid or missing API key")
+    if settings.bff_secret and not _secrets_match((x_desk_bff or "").strip(), settings.bff_secret):
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+
+
+def http_client_authorized(api_key: str, bff: str) -> bool:
+    settings = get_settings()
+    if not _secrets_match((api_key or "").strip(), settings.desk_api_key):
+        return False
+    if settings.bff_secret and not _secrets_match((bff or "").strip(), settings.bff_secret):
+        return False
+    return True
 
 
 async def require_ws_api_key(websocket: WebSocket) -> bool:
     settings = get_settings()
-    key = (websocket.query_params.get("api_key") or "").strip()
-    if key != settings.desk_api_key:
+    key = (
+        (websocket.headers.get("x-api-key") or "")
+        or (websocket.query_params.get("api_key") or "")
+    ).strip()
+    if not _secrets_match(key, settings.desk_api_key):
         await websocket.close(code=4401)
         return False
+    if settings.bff_secret:
+        bff = (websocket.headers.get("x-desk-bff") or "").strip()
+        if not _secrets_match(bff, settings.bff_secret):
+            await websocket.close(code=4401)
+            return False
     return True

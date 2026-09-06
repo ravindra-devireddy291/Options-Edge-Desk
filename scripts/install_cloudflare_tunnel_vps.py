@@ -10,12 +10,31 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import paramiko
 
 HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
+PORT = int(os.environ.get("EDGE_VPS_PORT", "443"))
 PASS = os.environ.get("EDGE_VPS_PASS", "")
 TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "").strip()
+
+
+def load_env() -> None:
+    env = Path(__file__).resolve().parents[1] / ".env"
+    if not env.exists():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_env()
+HOST = os.environ.get("EDGE_VPS_HOST", HOST)
+PORT = int(os.environ.get("EDGE_VPS_PORT", str(PORT)))
+PASS = os.environ.get("EDGE_VPS_PASS", PASS)
+TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", TOKEN).strip()
 
 
 def run(c, cmd: str, timeout: int = 180) -> tuple[int, str]:
@@ -37,7 +56,7 @@ def main() -> int:
 
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username="root", password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
+    c.connect(HOST, port=PORT, username="root", password=PASS, timeout=60, allow_agent=False, look_for_keys=False)
 
     run(c, "ss -ltnp | grep 8080 || echo 'WARN: nothing on 127.0.0.1:8080'")
     run(c, "cat /etc/os-release | head -n 5")
@@ -69,19 +88,37 @@ cloudflared --version
             timeout=180,
         )
 
-    # Remotely managed tunnel: one systemd unit. Do not also run `tunnel run` (duplicate).
-    run(c, "systemctl stop cloudflared 2>/dev/null || true; cloudflared service uninstall 2>/dev/null || true")
-    # token only on the remote command line for install; not stored in this repo
-    code, out = run(c, f"cloudflared service install {TOKEN}", timeout=60)
-    if code != 0 and "already" not in out.lower():
-        c.close()
-        return 1
-    run(c, "systemctl enable cloudflared; systemctl restart cloudflared; sleep 2; systemctl is-active cloudflared; systemctl --no-pager -l status cloudflared | head -n 25")
-    run(c, "journalctl -u cloudflared -n 40 --no-pager || true")
+    # Remotely managed tunnel: systemd unit + token file (new cloudflared expects --token-file).
+    run(c, "systemctl stop cloudflared 2>/dev/null || true; pkill -f 'cloudflared tunnel --url' || true; sleep 1")
+    run(c, "cloudflared service uninstall 2>/dev/null || true")
+    run(c, "mkdir -p /etc/cloudflared; chmod 700 /etc/cloudflared")
+    sftp = c.open_sftp()
+    with sftp.file("/etc/cloudflared/token", "w") as fh:
+        fh.write(TOKEN + "\n")
+    sftp.chmod("/etc/cloudflared/token", 0o600)
+    unit_path = Path(__file__).resolve().parents[1] / "deploy" / "cloudflared.service"
+    unit = unit_path.read_text(encoding="utf-8")
+    with sftp.file("/etc/systemd/system/cloudflared.service", "w") as fh:
+        fh.write(unit)
+    sftp.close()
+    run(
+        c,
+        "test -x /usr/bin/cloudflared || ln -sf /usr/local/bin/cloudflared /usr/bin/cloudflared; "
+        "systemctl daemon-reload; systemctl enable cloudflared; systemctl reset-failed cloudflared; "
+        "systemctl restart cloudflared; sleep 8; systemctl is-active cloudflared; "
+        "systemctl --no-pager -l status cloudflared | head -n 25",
+        timeout=90,
+    )
+    run(c, "journalctl -u cloudflared -n 30 --no-pager || true")
+    run(
+        c,
+        "curl -sS -m 20 -w '\\nHTTP=%{http_code}\\n' https://deskapi.ravindra-devireddy.com/healthz | tail -5",
+        timeout=40,
+    )
     c.close()
     print(
-        "Host tunnel service started. In Cloudflare Zero Trust → Tunnels → Public Hostname, "
-        "add HTTP service http://127.0.0.1:8080 for REST+WS on the same hostname.",
+        "Named tunnel connector started. Public hostname should be "
+        "deskapi.ravindra-devireddy.com → http://127.0.0.1:8080",
         flush=True,
     )
     return 0
