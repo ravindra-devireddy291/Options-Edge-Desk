@@ -483,6 +483,7 @@ def _desk_status_payload_fresh() -> Dict[str, Any]:
         "halted_underlyings": list(shadow.get("halted_underlyings") or []),
         "broker_reachable": bool(broker_ok),
         "market_session": market_session(),
+        "session_day": session_day().isoformat(),
         "session_label": "NSE 09:15–15:30 IST",
         "available_cash": cash,
         "nifty_spot": (spots.get("NIFTY") or {}).get("ltp"),

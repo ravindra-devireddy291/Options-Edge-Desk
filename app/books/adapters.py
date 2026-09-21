@@ -157,6 +157,22 @@ def paper_period_realized(book: BookPaths, *, start: Optional[date] = None) -> D
     return paper_period_stats(book, start=start)
 
 
+def _shadow_day_keys(book: BookPaths) -> List[str]:
+    """IST day strings present on disk for this book (pack-scoped preferred)."""
+    days: set[str] = set()
+    for path in book.shadow_dir.glob("shadow_*.jsonl"):
+        stem = path.name[len("shadow_") : -len(".jsonl")]
+        if book.pack_id:
+            suffix = f"__{book.pack_id}"
+            if stem.endswith(suffix):
+                days.add(stem[: -len(suffix)])
+            elif "__" not in stem:
+                days.add(stem)
+        elif "__" not in stem:
+            days.add(stem)
+    return sorted(d for d in days if len(d) >= 10)
+
+
 def paper_period_stats(book: BookPaths, *, start: Optional[date] = None) -> Dict[str, Any]:
     """Paper-period realized + peak-to-trough DD in rupees (not lab lifetime equity DD)."""
     start = start or paper_book_start()
@@ -166,8 +182,7 @@ def paper_period_stats(book: BookPaths, *, start: Optional[date] = None) -> Dict
     trade_count = 0
     today_pnl = 0.0
     allow_lab = book.variant == "secondary"
-    for path in sorted(book.shadow_dir.glob("shadow_*.jsonl")):
-        day_s = path.name.replace("shadow_", "").replace(".jsonl", "")
+    for day_s in _shadow_day_keys(book):
         try:
             day = date.fromisoformat(day_s)
         except ValueError:
@@ -246,15 +261,37 @@ def book_capital(book: BookPaths) -> float:
 
 def _read_journal(book: BookPaths, day: Optional[str] = None, *, strict_day: bool = False) -> List[Dict[str, Any]]:
     day = day or _session_day().isoformat()
-    path = book.shadow_dir / f"shadow_{day}.jsonl"
+    path = None
+    if book.pack_id:
+        scoped = book.shadow_dir / f"shadow_{day}__{book.pack_id}.jsonl"
+        if scoped.exists():
+            path = scoped
+    if path is None:
+        path = book.shadow_dir / f"shadow_{day}.jsonl"
     if not path.exists():
         if strict_day:
             return []
-        # fall back to latest journal file
-        files = sorted(book.shadow_dir.glob("shadow_*.jsonl"))
-        if not files:
-            return []
-        path = files[-1]
+        # Prefer this pack's scoped journals; never steal another pack's __pack_id file.
+        if book.pack_id:
+            scoped_files = sorted(book.shadow_dir.glob(f"shadow_*__{book.pack_id}.jsonl"))
+            if scoped_files:
+                path = scoped_files[-1]
+            else:
+                shared = [
+                    f
+                    for f in sorted(book.shadow_dir.glob("shadow_*.jsonl"))
+                    if "__" not in f.name
+                ]
+                if not shared:
+                    return []
+                path = shared[-1]
+        else:
+            files = [
+                f for f in sorted(book.shadow_dir.glob("shadow_*.jsonl")) if "__" not in f.name
+            ]
+            if not files:
+                return []
+            path = files[-1]
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():

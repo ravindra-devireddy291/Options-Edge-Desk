@@ -1,0 +1,23 @@
+{
+  "n": 2,
+  "recipes": [
+    {
+      "recipe_key": "tier2_recommended",
+      "id": "E_g80_tp60_st25_h2",
+      "net_pnl": 711123.4,
+      "return_pct": 355.56,
+      "peak_dd_pct": 11.09,
+      "n_trades": 206,
+      "dd_cap_respected": true
+    },
+    {
+      "recipe_key": "ce400_secondary",
+      "id": "E_g80_tp60_st25_h0",
+      "net_pnl": 712086.33,
+      "return_pct": 356.04,
+      "peak_dd_pct": 11.94,
+      "n_trades": 230,
+      "dd_cap_respected": true
+    }
+  ]
+}

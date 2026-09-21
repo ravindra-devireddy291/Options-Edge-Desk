@@ -29,6 +29,20 @@ def status() -> Dict[str, Any]:
     return dict(_LAST)
 
 
+def snapshot_pack_journal(lab_root: Path, pack_id: str, day: str | None = None) -> str | None:
+    """Copy today's shared shadow jsonl to a pack-scoped file. Returns dst name or None."""
+    day = day or now_ist().date().isoformat()
+    pid = str(pack_id or "").strip()
+    if not pid:
+        return None
+    src = Path(lab_root) / "reports" / "shadow" / f"shadow_{day}.jsonl"
+    if not src.exists():
+        return None
+    dst = src.with_name(f"shadow_{day}__{pid}.jsonl")
+    dst.write_bytes(src.read_bytes())
+    return dst.name
+
+
 def _run_journal(lab_root: Path, config: str, py: str, *, skip_ingest: bool = False) -> Dict[str, Any]:
     daily = lab_root / "scripts" / "run_shadow_daily.py"
     journal = lab_root / "scripts" / "run_shadow_journal.py"
@@ -87,6 +101,9 @@ def tick() -> None:
         row = _run_journal(root, pack.config_rel, py, skip_ingest=skip_ingest)
         row["pack_id"] = pack.pack_id
         row["config"] = pack.config_rel
+        jname = snapshot_pack_journal(root, pack.pack_id)
+        if jname:
+            row["journal"] = jname
         books.append(row)
     ok = all(b.get("ok") for b in books)
     _LAST.update(

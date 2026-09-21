@@ -1,0 +1,143 @@
+{
+  "rows": [
+    {
+      "pack": "nifty_alpha",
+      "config": "config/rungs/nifty_alpha.yaml",
+      "span": "2021-07-01\u21922026-06-30",
+      "elapsed_s": 726.4,
+      "got": {
+        "return_pct": 355.56,
+        "peak_dd_pct": 11.09,
+        "net_pnl_inr": 711123.0,
+        "calmar": 32.061,
+        "n_trades": 206,
+        "holdout_return_pct": 355.5,
+        "holdout_peak_dd_pct": 10.47,
+        "march_2026_return_pct": -4.92
+      },
+      "snapshot": {
+        "return_pct": 355.56,
+        "peak_dd_pct": 11.09,
+        "net_pnl_inr": 711123,
+        "n_trades": 206,
+        "holdout_return_pct": 355.5,
+        "holdout_peak_dd_pct": 10.47
+      },
+      "diffs": [
+        {
+          "key": "return_pct",
+          "expected": 355.56,
+          "got": 355.56,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "peak_dd_pct",
+          "expected": 11.09,
+          "got": 11.09,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "net_pnl_inr",
+          "expected": 711123.0,
+          "got": 711123.0,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "n_trades",
+          "expected": 206.0,
+          "got": 206,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "holdout_return_pct",
+          "expected": 355.5,
+          "got": 355.5,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "holdout_peak_dd_pct",
+          "expected": 10.47,
+          "got": 10.47,
+          "delta": 0.0,
+          "ok": true
+        }
+      ],
+      "match": true
+    },
+    {
+      "pack": "nifty_stable",
+      "config": "config/rungs/nifty_stable.yaml",
+      "span": "2021-07-01\u21922026-06-30",
+      "elapsed_s": 704.6,
+      "got": {
+        "return_pct": 356.04,
+        "peak_dd_pct": 11.94,
+        "net_pnl_inr": 712086.0,
+        "calmar": 29.819,
+        "n_trades": 230,
+        "holdout_return_pct": 356.42,
+        "holdout_peak_dd_pct": 11.76,
+        "march_2026_return_pct": -4.92
+      },
+      "snapshot": {
+        "return_pct": 356.04,
+        "peak_dd_pct": 11.94,
+        "net_pnl_inr": 712086,
+        "n_trades": 230,
+        "holdout_return_pct": 356.42,
+        "holdout_peak_dd_pct": 11.76
+      },
+      "diffs": [
+        {
+          "key": "return_pct",
+          "expected": 356.04,
+          "got": 356.04,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "peak_dd_pct",
+          "expected": 11.94,
+          "got": 11.94,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "net_pnl_inr",
+          "expected": 712086.0,
+          "got": 712086.0,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "n_trades",
+          "expected": 230.0,
+          "got": 230,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "holdout_return_pct",
+          "expected": 356.42,
+          "got": 356.42,
+          "delta": 0.0,
+          "ok": true
+        },
+        {
+          "key": "holdout_peak_dd_pct",
+          "expected": 11.76,
+          "got": 11.76,
+          "delta": 0.0,
+          "ok": true
+        }
+      ],
+      "match": true
+    }
+  ],
+  "all_match": true
+}

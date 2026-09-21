@@ -67,7 +67,7 @@ PAPER_VARIANTS: Tuple[PackDef, ...] = (
     PackDef(
         pack_id="nifty_tier2_recommended",
         underlying="NIFTY",
-        role="Nifty Alpha · Gate 5 paper",
+        role="Nifty Alpha · Groww PRIMARY (Gate 5)",
         config_rel="config/rungs/nifty_alpha.yaml",
         tape_rel="reports/nifty_trades_tier2_recommended_2l.json",
         selection="primary",
@@ -75,7 +75,7 @@ PAPER_VARIANTS: Tuple[PackDef, ...] = (
     PackDef(
         pack_id="nifty_ce400_secondary",
         underlying="NIFTY",
-        role="Nifty Stable · dual-track paper",
+        role="Nifty Stable · Groww STABLE (dual-track)",
         config_rel="config/rungs/nifty_stable.yaml",
         tape_rel="reports/nifty_trades_ce400_secondary_2l.json",
         selection="secondary",
