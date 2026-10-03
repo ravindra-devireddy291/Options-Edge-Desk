@@ -19,10 +19,10 @@ UI pack_ids stay: `nifty_tier2_recommended`, `nifty_ce400_secondary`, `bn_f6o3_s
 
 - Fade: gap80 · smart200/0.25 · CE300 · **stop 25% / TP 60%** · chop_only · **Friday off** (`trade_on_friday: false`)
 - Alpha: `month_ce_stop_halt_n: 2` · Stable: `0`
-- Sizing: `risk_budget` · risk ₹40k · premium 30% · DD halt 15% · daily DD governor
+- Sizing: `risk_budget` · risk ₹40k · premium 30% · DD halt 15% · daily DD governor · **entry at 09:30 only** (`entry_window_minutes=0`)
 - Lake: **`data_lake_groww`** (+ Dhan 09:15–09:40 open fallback on G5 holes; residual exclude **0.08%**)
-- Locked snapshot @ ₹2L (**Friday off 2026-09-27**): Alpha **+434.1%** (DD 15.0%, 184t) · Stable **+271.2%** (DD 14.8%, 194t)
-- Prior post-fallback Friday-on print: Alpha +435.7% / Stable +417.2% (do not revive Friday-on for Nifty)
+- Locked snapshot @ ₹2L (**Friday off, replay 2026-10-03**): Alpha **+241.37%** (DD 15.18%, 177t) · Stable **+363.89%** (DD 23.76%, 184t)
+- Same path Friday-on reference (not locked): Alpha +435.67% / 224t · Stable +417.24% / 244t. Prior 434%/271% Friday-off prints were not reproducible (wrong entry window / A/B).
 
 ### BANKNIFTY model (Groww)
 
