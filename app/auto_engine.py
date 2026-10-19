@@ -211,6 +211,20 @@ def tick() -> None:
                     code=code,
                     accepted=True,
                 )
+                try:
+                    from app.client_live import notify_edge
+
+                    action = str(sig.get("action") or "BUY").upper()
+                    notify_edge(
+                        edge_id=sid,
+                        contract=str(sig.get("symbol") or sig.get("underlying") or sid),
+                        side="sell" if action == "SELL" else "buy",
+                        underlying=str(sig.get("underlying") or "NIFTY"),
+                        strike=float(sig.get("strike") or 0),
+                        option_type=str(sig.get("option_type") or "CE"),
+                    )
+                except Exception:
+                    pass
             elif code in ("GATE_DENY", "SHADOW_HALTED", "KILL_SWITCH", "CONTRACT_RESOLVE_FAILED"):
                 _fired.add(sid)
                 _save()
@@ -237,14 +251,16 @@ def tick() -> None:
     n_ok = 0
     for row in list(grid.get("rows") or []):
         qty = int(row.get("qty") or row.get("quantity") or 0)
-        if qty <= 0:
+        if qty == 0:
             continue
-        lots = int(row.get("lots") or 0) or 1
+        closing = "SELL" if qty > 0 else "BUY"
+        lot_size = max(1, int(row.get("lot_size") or 1))
+        lots = abs(int(row.get("lots") or 0)) or max(1, abs(qty) // lot_size)
         sig = {
             "signal_id": f"eod-{day}-{row.get('pack_id') or row.get('underlying')}-{row.get('symbol')}",
             "underlying": row.get("underlying"),
             "sleeve": str(row.get("sleeve") or "fade"),
-            "action": "SELL",
+            "action": closing,
             "target_lots": lots,
             "lots": lots,
             "symbol": row.get("tradingsymbol") or row.get("symbol"),
@@ -255,7 +271,7 @@ def tick() -> None:
             "ltp": row.get("ltp") or row.get("mark_price"),
             "pack_id": row.get("pack_id"),
         }
-        result = _place_signal(sig, side="SELL", force_eod=True)
+        result = _place_signal(sig, side=closing, force_eod=True)
         if result.get("accepted"):
             n_ok += 1
             _notice_from_place(sig, result)

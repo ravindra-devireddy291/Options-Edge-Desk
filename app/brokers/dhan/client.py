@@ -342,9 +342,12 @@ def _request(
     path: str,
     body: Optional[dict] = None,
     *,
-    retries: int = 3,
+    retries: Optional[int] = None,
     sleep_s: float = 0.25,
 ) -> Any:
+    # Order writes are not idempotent. A retry after a timeout can duplicate a live fill.
+    if retries is None:
+        retries = 1 if method.upper() != "GET" else 3
     client, token = credentials()
     url = path if path.startswith("http") else f"{API_BASE}{path}"
     data = None if body is None else json.dumps(body).encode("utf-8")

@@ -138,7 +138,14 @@ def load_execution_state(book: BookPaths) -> Dict[str, Any]:
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return {
+            "equity": 0.0,
+            "peak_equity": 0.0,
+            "dd_mode": "halted",
+            "month_halted": True,
+            "month_ce_halt": True,
+            "state_unreadable": True,
+        }
 
 
 def paper_book_start() -> date:

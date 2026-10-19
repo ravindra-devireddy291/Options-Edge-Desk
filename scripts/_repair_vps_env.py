@@ -6,12 +6,25 @@ import sys
 
 import paramiko
 
+def _require_desk_api_key() -> str:
+    key = (os.environ.get("DESK_API_KEY") or "").strip()
+    if not key:
+        from pathlib import Path
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("DESK_API_KEY="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if not key:
+        raise SystemExit("Set DESK_API_KEY")
+    return key
+
 HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
 PASS = os.environ["EDGE_VPS_PASS"]
 CHROOT = "/mnt/sys"
 DESK = "/root/Options-Edge-Desk"
-# Same default the UI/VPS scripts have used when DESK_API_KEY is not in laptop .env
-KEY = os.environ.get("DESK_API_KEY") or "hEe5070y9VnztqB1a2aFu9wkpw4L+PxcdQDbzuJjK+c="
+KEY = _require_desk_api_key()
 
 REMOTE = r"""
 from pathlib import Path

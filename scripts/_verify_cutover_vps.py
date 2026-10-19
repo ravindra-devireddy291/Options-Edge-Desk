@@ -44,9 +44,6 @@ print("STATUS", json.dumps({k: d.get(k) for k in (
     "broker_reachable", "live_enabled", "paper_auto", "kill_switch_active", "open_positions",
     "lab_journal", "paper_saved", "last_error",
 )}, default=str))
-live = get("/api/v1/desk/runner/start", key, {"mode": "live", "execution": "auto", "operator_id": "verify", "confirm_live": True})
-ld = live.get("data") if isinstance(live.get("data"), dict) else live
-print("LIVE_START", {k: ld.get(k) for k in ("accepted", "code", "message", "trading_active")})
 for p in (
     "/root/Options-Nifty-Edge-Lab/scripts/run_shadow_journal.py",
     "/root/Options-Edge-Lab/scripts/run_shadow_journal.py",

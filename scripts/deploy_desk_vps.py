@@ -12,6 +12,20 @@ from pathlib import Path
 
 import paramiko
 
+def _require_desk_api_key() -> str:
+    key = (os.environ.get("DESK_API_KEY") or "").strip()
+    if not key:
+        from pathlib import Path
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("DESK_API_KEY="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if not key:
+        raise SystemExit("Set DESK_API_KEY")
+    return key
+
 def _load_env() -> None:
     env_path = Path(__file__).resolve().parents[1] / ".env"
     if not env_path.exists():
@@ -164,6 +178,8 @@ want={
  'BN_CONFIG':'config/rungs/bn_alpha.yaml',
  'DESK_PAPER_AUTO': vals.get('DESK_PAPER_AUTO') or '1',
  'DESK_PAPER_ONLY': vals.get('DESK_PAPER_ONLY') or '1',
+ 'DESK_PAPER_BOOK_START': vals.get('DESK_PAPER_BOOK_START') or '2026-08-17',
+ 'DESK_MOCK_LOOP': vals.get('DESK_MOCK_LOOP') or '0',
 }
 # Preserve live cutover flags. Default off only when missing — never reset a live enable.
 for k, default in (
@@ -251,7 +267,7 @@ print('env keys', sorted(vals))
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             from vps_desk_restart import restart_desk
 
-            desk_key = os.environ.get("DESK_API_KEY", "").strip() or "hEe5070y9VnztqB1a2aFu9wkpw4L+PxcdQDbzuJjK+c="
+            desk_key = _require_desk_api_key()
 
             def _run(cmd: str, timeout: int = 120) -> str:
                 return run(c, cmd, timeout=timeout, check=False)
