@@ -107,7 +107,9 @@ class RunnerState:
                 "paused_day": self.paused_day,
                 "updated_at": _now(),
             }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
 
     def load(self) -> None:
         path = _state_path()
@@ -116,6 +118,11 @@ class RunnerState:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
+            with self._lock:
+                self.state = "STOPPED"
+                self.kill.active = True
+                self.kill.reason = "state_unreadable"
+                self.kill.activated_at = _now()
             return
         with self._lock:
             # Never auto-resume live trading after process restart — stay STOPPED

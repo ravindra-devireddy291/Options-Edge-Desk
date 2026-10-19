@@ -18,10 +18,6 @@ from pathlib import Path
 
 import paramiko
 
-HOST = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
-USER = os.environ.get("EDGE_VPS_USER", "root")
-PASS = os.environ.get("EDGE_VPS_PASS", "")
-CHROOT = "/mnt/sys"
 DESK = "/root/Options-Edge-Desk"
 
 LIVE_KEYS = {
@@ -53,15 +49,18 @@ def main() -> int:
         print("Refusing: pass --confirm-client-ready after written client confirmation.", file=sys.stderr)
         return 2
     _load_local_env()
-    password = os.environ.get("EDGE_VPS_PASS") or PASS
+    host = os.environ.get("EDGE_VPS_HOST", "87.232.72.137")
+    port = int(os.environ.get("EDGE_VPS_PORT", "443"))
+    user = os.environ.get("EDGE_VPS_USER", "root")
+    password = os.environ.get("EDGE_VPS_PASS", "")
     if not password:
         print("Set EDGE_VPS_PASS", file=sys.stderr)
         return 2
 
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username=USER, password=password, timeout=60, allow_agent=False, look_for_keys=False)
-    remote = f"{CHROOT}{DESK}/.env"
+    c.connect(host, port=port, username=user, password=password, timeout=60, allow_agent=False, look_for_keys=False)
+    remote = f"{DESK}/.env"
     sftp = c.open_sftp()
     try:
         with sftp.file(remote, "r") as fh:
@@ -76,11 +75,22 @@ def main() -> int:
         if "=" in line and not line.strip().startswith("#"):
             k, v = line.split("=", 1)
             vals[k.strip()] = v.strip()
+    missing = [k for k in ("DESK_API_KEY", "DESK_BFF_SECRET") if not vals.get(k)]
+    if missing:
+        print("Refusing: VPS .env missing " + ", ".join(missing), file=sys.stderr)
+        sftp.close()
+        c.close()
+        return 2
+    if not vals.get("DESK_PAPER_AUTO"):
+        vals["DESK_PAPER_AUTO"] = "1"
+    if not vals.get("DESK_PAPER_ONLY"):
+        vals["DESK_PAPER_ONLY"] = "1"
     vals.update(LIVE_KEYS)
     with sftp.file(remote, "w") as fh:
         for k, v in vals.items():
             fh.write(f"{k}={v}\n")
     sftp.close()
+    c.exec_command(f"chmod 600 {remote}")
     _, o, e = c.exec_command(
         "systemctl restart edge-desk; sleep 4; systemctl is-active edge-desk; "
         "curl -s --max-time 10 http://127.0.0.1:8080/healthz || true",

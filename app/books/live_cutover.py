@@ -80,19 +80,17 @@ def g5_status(book: BookPaths) -> Dict[str, Any]:
 
 
 def book_live_flag(und: str) -> bool:
-    s = get_settings()
-    if und == "NIFTY":
-        return bool(s.live_nifty)
-    if und == "BANKNIFTY":
-        return bool(s.live_banknifty)
-    return False
+    """Master switch only. DESK_LIVE_ENABLED=0 keeps every book on paper."""
+    if und not in ("NIFTY", "BANKNIFTY"):
+        return False
+    return bool(get_settings().live_enabled)
 
 
 def book_uses_dhan(und: str, book: Optional[BookPaths] = None) -> bool:
     """
     True → place/cancel/positions for this book go to Dhan.
     False → desk paper OMS (simulate fill @ live LTP, no money).
-    Requires DESK_LIVE_ENABLED + LIVE_{UND} + G5 ≥ 20.
+    Requires DESK_LIVE_ENABLED=1 and G5 ≥ 20. LIVE_{UND} does not gate this.
     """
     s = get_settings()
     if not s.live_enabled:

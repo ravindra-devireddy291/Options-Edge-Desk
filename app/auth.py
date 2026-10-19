@@ -83,8 +83,10 @@ def cors_allowed_origins() -> list[str]:
 def get_settings() -> Settings:
     _load_dotenv()
     key = (os.environ.get("DESK_API_KEY") or "").strip()
+    live_on = (os.environ.get("DESK_LIVE_ENABLED") or "0").strip().lower() in ("1", "true", "yes")
     if not key:
-        # local-dev fallback so scaffold boots; production must set DESK_API_KEY
+        if live_on:
+            raise RuntimeError("Set DESK_API_KEY before DESK_LIVE_ENABLED=1")
         key = "dev-desk-key-" + secrets.token_hex(4)
         os.environ["DESK_API_KEY"] = key
     root = Path(__file__).resolve().parents[1]
@@ -135,10 +137,7 @@ def http_client_authorized(api_key: str, bff: str) -> bool:
 
 async def require_ws_api_key(websocket: WebSocket) -> bool:
     settings = get_settings()
-    key = (
-        (websocket.headers.get("x-api-key") or "")
-        or (websocket.query_params.get("api_key") or "")
-    ).strip()
+    key = (websocket.headers.get("x-api-key") or "").strip()
     if not _secrets_match(key, settings.desk_api_key):
         await websocket.close(code=4401)
         return False

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import cors_allowed_origins, get_settings, require_api_key, require_ws_api_key
+from app.client_routes import router as client_live_router
 from app.books import adapters as books
 from app.brokers.dhan import client as dhan
 from app.brokers.dhan.contracts import chain_snapshot, default_lot_size, resolve_contract
@@ -198,6 +199,7 @@ async def lifespan(_app: FastAPI):
 
     exec_task = asyncio.create_task(EXECUTION.keeper())
     wire_task = asyncio.create_task(_desk_wire())
+    groww_task = asyncio.create_task(_groww_link_keeper())
     try:
         await asyncio.to_thread(dhan.ensure_fresh_token)
     except Exception:
@@ -220,12 +222,42 @@ async def lifespan(_app: FastAPI):
         lake_task,
         exec_task,
         wire_task,
+        groww_task,
     ):
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
+
+
+async def _groww_link_keeper() -> None:
+    """05:45 IST access-token refresh. One client failing does not stop the others."""
+    from datetime import datetime
+
+    from app.client_live import IST, ensure_operator, refresh_access
+
+    try:
+        await asyncio.to_thread(ensure_operator)
+    except Exception:
+        pass
+    last_day = ""
+    while True:
+        try:
+            now = datetime.now(IST)
+            stamp = now.date().isoformat()
+            if now.hour == 5 and now.minute >= 45 and last_day != stamp:
+                await asyncio.to_thread(refresh_access, now)
+                last_day = stamp
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+
+def _desk_identity(request: Request) -> tuple[str, str]:
+    email = (request.headers.get("x-desk-user") or "").strip().lower()
+    role = (request.headers.get("x-desk-role") or "").strip().lower()
+    return email, role
 
 
 def _openapi_enabled() -> bool:
@@ -240,6 +272,7 @@ app = FastAPI(
     redoc_url="/redoc" if _openapi_enabled() else None,
     openapi_url="/openapi.json" if _openapi_enabled() else None,
 )
+app.include_router(client_live_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allowed_origins(),
@@ -634,9 +667,21 @@ def desk_status(_: None = Depends(require_api_key)):
 
 
 @app.get("/api/v1/desk/snapshot")
-def desk_snapshot(_: None = Depends(require_api_key)):
+def desk_snapshot(request: Request, _: None = Depends(require_api_key)):
     """One-shot status + books for boot / reconcile (UI DESK_SNAPSHOT_WS)."""
-    return ok(desk_snapshot_payload())
+    data = desk_snapshot_payload()
+    email, role = _desk_identity(request)
+    if role == "client" and email:
+        from app.client_live import orders_for, positions_for, trades_for
+
+        data = {
+            **data,
+            "positions": positions_for(email),
+            "orders": orders_for(email),
+            "trades": trades_for(email),
+            "signals": {"signals": []},
+        }
+    return ok(data)
 
 
 @app.get("/api/v1/desk/research/stable")
@@ -1050,21 +1095,37 @@ def _signals_payload(day: Optional[str] = None) -> Dict[str, Any]:
 
 
 @app.get("/api/v1/desk/positions")
-def positions(_: None = Depends(require_api_key)):
+def positions(request: Request, _: None = Depends(require_api_key)):
+    from app.client_live import is_client_role, positions_for
+
+    email, role = _desk_identity(request)
+    if is_client_role(role) and email:
+        return ok(positions_for(email))
     return ok(_positions_payload())
 
 
 @app.get("/api/v1/desk/orders/open")
-def orders_open(_: None = Depends(require_api_key)):
+def orders_open(request: Request, _: None = Depends(require_api_key)):
+    from app.client_live import is_client_role, orders_for
+
+    email, role = _desk_identity(request)
+    if is_client_role(role) and email:
+        return ok(orders_for(email))
     return ok(_orders_payload())
 
 
 @app.get("/api/v1/desk/trades/today")
 def trades_today(
+    request: Request,
     day: Optional[str] = Query(None, description="IST calendar day YYYY-MM-DD; default today"),
     _: None = Depends(require_api_key),
 ):
     """Today's closed/open rounds from shadow journals, with VPS archive fallback."""
+    from app.client_live import is_client_role, trades_for
+
+    email, role = _desk_identity(request)
+    if is_client_role(role) and email:
+        return ok(trades_for(email))
     if _mock_on() and not day:
         return ok(MOCK.exclusive_sync(MOCK.ledger.trades_today))
     return ok(_trades_payload(day))
@@ -1072,6 +1133,7 @@ def trades_today(
 
 @app.get("/api/v1/desk/trades/history")
 def trades_history(
+    request: Request,
     from_day: str = Query(..., alias="from", description="IST start YYYY-MM-DD"),
     to_day: Optional[str] = Query(None, alias="to", description="IST end YYYY-MM-DD; default today"),
     _: None = Depends(require_api_key),
@@ -1089,6 +1151,12 @@ def trades_history(
         return ok({"error": "invalid to", "to": to_day, "trades": [], "trade_count": 0})
     if end < start:
         start, end = end, start
+    from app.client_live import is_client_role, trades_for
+
+    email, role = _desk_identity(request)
+    if is_client_role(role) and email:
+        data = trades_for(email)
+        return ok({**data, "from": start.isoformat(), "to": end.isoformat()})
     if _mock_on():
         # Mock is single-session — return today's blotter only.
         data = MOCK.exclusive_sync(MOCK.ledger.trades_today)
@@ -1642,8 +1710,16 @@ class PaperOrderBody(BaseModel):
 
 
 @app.post("/api/v1/desk/orders/paper")
-def paper_order(body: PaperOrderBody, _: None = Depends(require_api_key)):
+def paper_order(body: PaperOrderBody, request: Request, _: None = Depends(require_api_key)):
     """UI-only paper place. Engine must not call this. TRADEABLE cards never auto-place."""
+    from app.client_live import is_client_role
+
+    _email, role = _desk_identity(request)
+    if is_client_role(role):
+        return JSONResponse(
+            status_code=403,
+            content=err("paper orders are not available for a client", code="forbidden"),
+        )
     if (RUNNER.mode or "").lower() == "mock":
         return ok(MOCK.exclusive_sync(lambda: place_paper(body, _books())))
     return ok(place_paper(body, _books()))

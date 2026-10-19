@@ -401,7 +401,7 @@ class TestHttpMutations(unittest.TestCase):
             )
             self.assertEqual(r.status_code, 200)
 
-            with self.client.websocket_connect(f"/ws/desk?api_key={self.key}") as ws:
+            with self.client.websocket_connect("/ws/desk", headers=self._h()) as ws:
                 msg = ws.receive_json()
                 self.assertEqual(msg.get("type"), "connected")
                 self.assertIn("channels", msg)

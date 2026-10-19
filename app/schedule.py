@@ -1,8 +1,8 @@
 """Weekday auto session; mock outside the cash window.
 
 Paper month: arms paper+auto ~09:10 IST. Never arms live while DESK_LIVE_ENABLED=0.
-After client confirmation: set DESK_LIVE_ENABLED=1 (+ LIVE_NIFTY/LIVE_BANKNIFTY=1) and
-restart — the same weekday clock then arms live+auto. Process boot is still STOPPED;
+After client confirmation: set DESK_LIVE_ENABLED=1 and restart. The same weekday
+clock then arms live+auto. Process boot is still STOPPED;
 this tick is what arms the session. Kill switch still wins.
 
 Stop from the UI pauses only for the rest of that IST day.
@@ -52,9 +52,8 @@ def in_cash_window() -> bool:
 
 
 def _live_cutover_ready() -> bool:
-    """True when master live is on and at least one book flag is on (per-book G5 still gates place)."""
-    s = get_settings()
-    return bool(s.live_enabled and (s.live_nifty or s.live_banknifty))
+    """True when DESK_LIVE_ENABLED=1. Per-book G5 still gates real Dhan orders."""
+    return bool(get_settings().live_enabled)
 
 
 def _discard_mock() -> None:
@@ -89,7 +88,7 @@ def arm_paper_auto(*, reason: str) -> None:
 
 
 def arm_live_auto(*, reason: str) -> None:
-    """Same weekday clock as paper. Only after DESK_LIVE_ENABLED + both book flags."""
+    """Same weekday clock as paper. Only after DESK_LIVE_ENABLED=1."""
     if RUNNER.kill.active:
         return
     if not _live_cutover_ready():

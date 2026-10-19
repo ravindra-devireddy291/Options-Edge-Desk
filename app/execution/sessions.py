@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from app.brokers.dhan import client as dhan
 from app.execution.config import ARMOR
+from app.runners.state import RUNNER, _now
 from app.execution.trail import effective_stop_px, sl_trigger_from_stop
 from app.execution.types import DhanOrderStatus, DhanOrderUpdate, ManagedSession, SessionState
 
@@ -219,6 +220,11 @@ def handle_order_update(upd: DhanOrderUpdate) -> Optional[ManagedSession]:
         elif upd.status == DhanOrderStatus.REJECTED:
             session.state = SessionState.ERROR
             session.error = "sl_rejected"
+            if not RUNNER.kill.active:
+                RUNNER.kill.active = True
+                RUNNER.kill.reason = "sl_rejected"
+                RUNNER.kill.activated_at = _now()
+                RUNNER.persist()
         return session
 
     if session.tp_order_id and upd.order_id == session.tp_order_id:

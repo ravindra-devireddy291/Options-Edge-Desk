@@ -28,6 +28,7 @@ class Contract:
     option_type: str  # CE / PE
     expiry: str  # YYYY-MM-DD
     lot_size: int
+    lot_from_master: bool = True
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class Contract:
             "option_type": self.option_type,
             "expiry": self.expiry,
             "lot_size": self.lot_size,
+            "lot_from_master": self.lot_from_master,
         }
 
 
@@ -146,10 +148,12 @@ def option_rows(underlying: str) -> List[Dict[str, Any]]:
         if not exp or opt not in ("CE", "PE"):
             continue
         lot_s = _pick(r, "SEM_LOT_UNITS", "LOT_SIZE", "SEM_LOT_SIZE")
+        lot_from_master = bool(lot_s)
         try:
             lot = int(float(lot_s)) if lot_s else int(DEFAULT_LOT.get(und, 1))
         except ValueError:
             lot = int(DEFAULT_LOT.get(und, 1))
+            lot_from_master = False
         out.append(
             {
                 "security_id": str(sid),
@@ -158,6 +162,7 @@ def option_rows(underlying: str) -> List[Dict[str, Any]]:
                 "option_type": opt,
                 "expiry": exp,
                 "lot_size": max(1, lot),
+                "lot_from_master": lot_from_master,
                 "underlying": und,
             }
         )
@@ -192,6 +197,7 @@ def resolve_by_symbol(symbol: str, underlying: Optional[str] = None) -> Optional
                 option_type=str(r["option_type"]),
                 expiry=r["expiry"].isoformat(),
                 lot_size=int(r["lot_size"]),
+                lot_from_master=bool(r.get("lot_from_master", True)),
             )
     return None
 
@@ -219,6 +225,7 @@ def resolve_contract(
                     option_type=str(r["option_type"]),
                     expiry=r["expiry"].isoformat(),
                     lot_size=int(r["lot_size"]),
+                    lot_from_master=bool(r.get("lot_from_master", True)),
                 )
         return Contract(
             underlying=und,
@@ -228,6 +235,7 @@ def resolve_contract(
             option_type=_norm_opt(option_type or ""),
             expiry=expiry or "",
             lot_size=int(DEFAULT_LOT.get(und, 1)),
+            lot_from_master=False,
         )
 
     if symbol and _is_exchange_symbol(symbol):
@@ -292,6 +300,7 @@ def resolve_contract(
         option_type=str(r["option_type"]),
         expiry=r["expiry"].isoformat(),
         lot_size=int(r["lot_size"]),
+        lot_from_master=bool(r.get("lot_from_master", True)),
     )
 
 
@@ -336,6 +345,7 @@ def lookup_by_security_id(security_id: str, underlying: Optional[str] = None) ->
                         option_type=str(r["option_type"]),
                         expiry=r["expiry"].isoformat(),
                         lot_size=int(r["lot_size"]),
+                        lot_from_master=bool(r.get("lot_from_master", True)),
                     )
         except Exception:
             continue

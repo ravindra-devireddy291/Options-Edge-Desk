@@ -720,6 +720,15 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
             )
         )
 
+    if not getattr(contract, "lot_from_master", True):
+        return finish(
+            _reject(
+                "CONTRACT_RESOLVE_FAILED",
+                "Scrip master has no lot size for this contract. Nothing was placed.",
+                {"contract": cui, "gate": gate},
+            )
+        )
+
     try:
         from app.execution.armor import place_armed_entry, place_armed_exit
         from app.execution.config import ARMOR
@@ -849,7 +858,7 @@ def place_paper(body: Any, book_list) -> Dict[str, Any]:
                 code,
                 "Broker refused the order. Nothing was confirmed."
                 if code == "BROKER_REJECT"
-                else "Broker unreachable. Nothing was placed.",
+                else "Broker did not confirm the order. Check open orders before sending it again.",
                 {
                     "order": {
                         "client_order_id": client_oid,
