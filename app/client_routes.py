@@ -1,12 +1,13 @@
-"""Client live routes. Identity is the BFF header, never a body field."""
+"""Client live routes. Identity is the signed BFF assertion, never a body field."""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.assertion import read_assertion
 from app.auth import require_api_key
 from app.client_live import (
     decide,
@@ -51,15 +52,8 @@ class DecisionBody(BaseModel):
     decision: Literal["accept", "reject"]
 
 
-def _caller(
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> tuple[str, str]:
-    email = (x_desk_user or "").strip().lower()
-    role = (x_desk_role or "").strip().lower()
-    if "@" not in email or role not in ("admin", "client"):
-        raise ValueError("missing desk user")
-    return email, role
+def _caller(request: Request) -> tuple[str, str]:
+    return read_assertion(request)
 
 
 def _bad(exc: Exception) -> JSONResponse:
@@ -75,24 +69,18 @@ def auth_login(body: LoginBody) -> JSONResponse:
 
 
 @router.get("/me/live")
-def get_me_live(
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def get_me_live(request: Request) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(me_live(email)))
     except Exception as exc:
         return _bad(exc)
 
 
 @router.get("/clients/live")
-def get_clients_live(
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def get_clients_live(request: Request) -> JSONResponse:
     try:
-        _email, role = _caller(x_desk_user, x_desk_role)
+        _email, role = _caller(request)
     except Exception as exc:
         return _bad(exc)
     if is_client_role(role):
@@ -101,64 +89,45 @@ def get_clients_live(
 
 
 @router.post("/me/register")
-def post_register(
-    body: RegisterBody,
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def post_register(request: Request, body: RegisterBody) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(register(email, body.model_dump())))
     except Exception as exc:
         return _bad(exc)
 
 
 @router.post("/groww/link")
-def post_link(
-    body: LinkBody,
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def post_link(request: Request, body: LinkBody) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(link_groww(email, body.totp_token, body.totp_secret)))
     except Exception as exc:
         return _bad(exc)
 
 
 @router.post("/me/auto")
-def post_auto(
-    body: AutoBody,
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def post_auto(request: Request, body: AutoBody) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(set_auto(email, body.auto_mode)))
     except Exception as exc:
         return _bad(exc)
 
 
 @router.post("/me/stop")
-def post_stop(
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def post_stop(request: Request) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(stop_orders(email)))
     except Exception as exc:
         return _bad(exc)
 
 
 @router.post("/edges/decision")
-def post_decision(
-    body: DecisionBody,
-    x_desk_user: Optional[str] = Header(default=None, alias="X-Desk-User"),
-    x_desk_role: Optional[str] = Header(default=None, alias="X-Desk-Role"),
-) -> JSONResponse:
+def post_decision(request: Request, body: DecisionBody) -> JSONResponse:
     try:
-        email, _role = _caller(x_desk_user, x_desk_role)
+        email, _role = _caller(request)
         return JSONResponse(status_code=200, content=ok(decide(email, body.edge_id, body.decision)))
     except Exception as exc:
         return _bad(exc)

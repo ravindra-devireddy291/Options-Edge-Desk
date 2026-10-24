@@ -14,6 +14,7 @@ os.environ["DESK_API_KEY"] = "test-desk-key"
 os.environ["DESK_BFF_SECRET"] = ""
 os.environ["GROWW_MODE"] = "local"
 os.environ["GROWW_LINK_KEY"] = "test-groww-link-key"
+os.environ["CLIENT_LIVE_FANOUT_SYNC"] = "1"
 os.environ["CLIENT_LIVE_DB"] = str(Path(tempfile.mkdtemp()) / "clients.sqlite")
 
 from app.auth import get_settings  # noqa: E402

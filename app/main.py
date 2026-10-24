@@ -255,9 +255,14 @@ async def _groww_link_keeper() -> None:
 
 
 def _desk_identity(request: Request) -> tuple[str, str]:
-    email = (request.headers.get("x-desk-user") or "").strip().lower()
-    role = (request.headers.get("x-desk-role") or "").strip().lower()
-    return email, role
+    from app.assertion import read_assertion
+
+    try:
+        return read_assertion(request)
+    except Exception:
+        email = (request.headers.get("x-desk-user") or "").strip().lower()
+        role = (request.headers.get("x-desk-role") or "").strip().lower()
+        return email, role
 
 
 def _openapi_enabled() -> bool:
