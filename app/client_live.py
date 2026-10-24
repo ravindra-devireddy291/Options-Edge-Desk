@@ -1,9 +1,12 @@
 """Client logins, Groww link, and one-edge fan-out. Paper runner is not touched."""
 from __future__ import annotations
 
+import logging
 import os
+import queue
 import re
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -132,7 +135,54 @@ def decide(email: str, edge_id: str, decision: str) -> Dict[str, Any]:
     return me_live(email)
 
 
+_edge_q: "queue.Queue[dict]" = queue.Queue(maxsize=1000)
+_worker_started = False
+
+
 def notify_edge(
+    edge_id: str,
+    contract: str,
+    side: str,
+    underlying: str = "NIFTY",
+    strike: float = 0,
+    option_type: str = "CE",
+) -> None:
+    """Queue fan-out so the paper engine tick is never blocked on broker calls."""
+    global _worker_started
+    if not _worker_started:
+        _worker_started = True
+        threading.Thread(target=_edge_worker, daemon=True, name="edge-fanout").start()
+    try:
+        _edge_q.put_nowait(
+            dict(
+                edge_id=edge_id,
+                contract=contract,
+                side=side,
+                underlying=underlying,
+                strike=strike,
+                option_type=option_type,
+            )
+        )
+    except queue.Full:
+        logging.error("edge queue full, dropped %s", edge_id)
+        return
+    # Unit tests and local scripts can wait; the paper tick must not.
+    if os.environ.get("CLIENT_LIVE_FANOUT_SYNC") == "1":
+        _edge_q.join()
+
+
+def _edge_worker() -> None:
+    while True:
+        job = _edge_q.get()
+        try:
+            _fan_out(**job)
+        except Exception:
+            logging.exception("fan-out failed for %s", job.get("edge_id"))
+        finally:
+            _edge_q.task_done()
+
+
+def _fan_out(
     edge_id: str,
     contract: str,
     side: str,
@@ -238,7 +288,7 @@ def me_live(email: str) -> Dict[str, Any]:
             "status": status,
             "groww_client_id": link["groww_client_id"] if link else None,
         },
-        "pending_edge": _edge(pending) if pending else None,
+        "pending_edge": _edge(pending, funds, margin, int(client["max_lots"])) if pending else None,
         "last_order": _last(last) if last else None,
     }
 
@@ -483,8 +533,21 @@ def _exchange(conn: sqlite3.Connection, email: str, token: str, secret: str) -> 
     )
 
 
-def _edge(row: sqlite3.Row) -> Dict[str, str]:
-    return {"edge_id": row["edge_id"], "contract": row["contract"], "side": row["side"]}
+def _edge(row: sqlite3.Row, funds: Optional[float] = None, margin: Optional[float] = None, max_lots: int = 10) -> Dict[str, Any]:
+    lots = 0
+    margin_inr = None
+    if funds is not None and margin is not None and margin > 0:
+        lots = lots_from_funds(float(funds), float(margin), max_lots)
+        margin_inr = float(margin) * lots if lots else float(margin)
+    return {
+        "edge_id": row["edge_id"],
+        "contract": row["contract"],
+        "side": row["side"],
+        "lots": lots,
+        "approx_premium_inr": None,
+        "margin_inr": margin_inr,
+        "expires_at": None,
+    }
 
 
 def _last(row: sqlite3.Row) -> Dict[str, Any]:

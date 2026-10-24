@@ -90,5 +90,9 @@ class LiveGroww:
 def gateway() -> GrowwGateway:
     mode = (os.environ.get("GROWW_MODE") or "local").strip().lower()
     if mode == "live":
+        if os.environ.get("CLIENT_EXECUTION_APPROVED") != "1":
+            raise RuntimeError(
+                "Live client execution is disabled. Set CLIENT_EXECUTION_APPROVED=1 only after legal and risk sign-off"
+            )
         return LiveGroww()
     return LocalGroww()

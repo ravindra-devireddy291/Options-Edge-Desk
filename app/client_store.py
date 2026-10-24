@@ -113,18 +113,32 @@ def _stream(key: bytes, nonce: bytes, size: int) -> bytes:
 
 
 def seal(plain: str) -> str:
-    raw = plain.encode("utf-8")
-    nonce = os.urandom(16)
-    key = link_key()
-    cipher = bytes(a ^ b for a, b in zip(raw, _stream(key, nonce, len(raw))))
-    mac = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
-    return base64.b64encode(nonce + mac + cipher).decode("ascii")
+    """AES-GCM when cryptography is installed; otherwise legacy HMAC-CTR (prefixed v1)."""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        nonce = os.urandom(12)
+        ct = AESGCM(link_key()).encrypt(nonce, plain.encode("utf-8"), b"groww-link-v2")
+        return "v2:" + base64.b64encode(nonce + ct).decode("ascii")
+    except ImportError:
+        raw = plain.encode("utf-8")
+        nonce = os.urandom(16)
+        key = link_key()
+        cipher = bytes(a ^ b for a, b in zip(raw, _stream(key, nonce, len(raw))))
+        mac = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+        return "v1:" + base64.b64encode(nonce + mac + cipher).decode("ascii")
 
 
 def open_seal(packed: Optional[str]) -> str:
     if not packed:
         return ""
-    blob = base64.b64decode(packed.encode("ascii"))
+    if packed.startswith("v2:"):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        blob = base64.b64decode(packed[3:])
+        return AESGCM(link_key()).decrypt(blob[:12], blob[12:], b"groww-link-v2").decode("utf-8")
+    raw_packed = packed[3:] if packed.startswith("v1:") else packed
+    blob = base64.b64decode(raw_packed.encode("ascii"))
     nonce, mac, cipher = blob[:16], blob[16:48], blob[48:]
     key = link_key()
     expect = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
